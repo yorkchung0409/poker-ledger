@@ -1,0 +1,2571 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<!-- iOS Safari 从 10 起会忽略 user-scalable=no（为无障碍考虑），
+     所以在 JS 里再用 gesturestart / 双击 兜一层，见文件末尾的防缩放脚本。 -->
+<meta name="theme-color" content="#0b2e1c">
+<title>扑克记分房</title>
+<style>
+  /* ============================================================
+     配色（深色主题）
+     ------------------------------------------------------------
+     色板取自参考工具「扑克积分记账工具.html」的深色系：
+     近黑底 / 深灰卡片 / 亮蓝主色 / 金色点缀。
+     唯一没照抄的是输赢色 —— 参考页是欧美习惯（绿=赢），
+     我们按中国习惯：**红=赢、绿=输**（与 A 股涨跌一致）。
+     ============================================================ */
+  :root {
+    --bg: #0b0d11;               /* 页面底色（比参考页再深一档，让卡片浮起来） */
+    --card: #191d25;             /* 卡片 */
+    --surface: #212630;          /* 输入框 / 次级面板 */
+    --surface2: #262b36;         /* 输入框 hover / 更浅一档 */
+    --line: #2f3542;             /* 描边 */
+    --line-soft: #242933;        /* 表格内分隔线 */
+
+    --primary: #5b9dff;          /* 主色（亮蓝，按钮/焦点） */
+    --primary-ink: #0f1115;      /* 主色上的文字：深色，对比度 6.94 ✓ */
+    --primary-soft: rgba(91, 157, 255, 0.14);
+    --primary-softer: rgba(91, 157, 255, 0.08);
+
+    /* 顶栏：不再用墨绿。整站已是冷蓝灰体系，顶栏留一块绿会像两个 App 缝在一起。
+       改成「比页面底色更深的同色系」+ 底边一条主色细线 —— 靠明度而非色相分层。 */
+    --topbar: #080a0e;           /* 比 --bg 再深一档，滚动时能压住下方内容 */
+    --topbar-line: rgba(91, 157, 255, 0.28);  /* 底边主色细线：品牌的唯一标识 */
+    --gold: #f5c451;             /* 点缀（第一名、金色高亮） */
+    --gold-ink: #0f1115;
+
+    --text: #e8eaed;
+    --muted: #9aa2b1;
+    --faint: #5f6878;
+
+    /* ★ 中国习惯：红=赢（涨）、绿=输（跌） */
+    --win: #ff5c5c;
+    --lose: #3ddc84;
+
+    --radius: 12px;
+    --shadow: 0 2px 14px rgba(0, 0, 0, 0.45);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html { -webkit-text-size-adjust: 100%; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 15px;
+    line-height: 1.5;
+    padding-bottom: calc(84px + env(safe-area-inset-bottom));
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .num { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+         font-variant-numeric: tabular-nums; }
+
+  /* ===== 顶栏 ===== */
+  /* 同色系分层：底色比 --bg 更深，靠一条主色细线与内容区分层。
+     不用色相拉开（绿/蓝对撞），也不用大投影 —— 深色界面里投影几乎看不见，
+     只会让顶栏边缘糊掉。 */
+  .topbar {
+    position: sticky; top: 0; z-index: 20;
+    background: var(--topbar);
+    color: var(--text);
+    padding: calc(12px + env(safe-area-inset-top)) 16px 12px;
+    border-bottom: 1px solid var(--topbar-line);
+  }
+  .topbar-inner { max-width: 640px; margin: 0 auto; }
+  .brand-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
+  .brand-mark {
+    width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0;
+    background: linear-gradient(145deg, var(--gold), #b8892a);
+    display: grid; place-items: center;
+    color: var(--gold-ink); font-weight: 800; font-size: 15px;
+  }
+  .brand-name { font-size: 17px; font-weight: 600; letter-spacing: 0.5px; white-space: nowrap; }
+  /* 副标题：原来是 white 58%，压在深色顶栏上偏灰；改用主题的 muted，和正文弱化色统一 */
+  .brand-sub { font-size: 11px; color: var(--muted); margin-top: -2px; }
+
+  .icon-btn {
+    background: var(--surface); border: 1px solid var(--line); color: var(--text);
+    width: 34px; height: 34px; border-radius: 9px; cursor: pointer;
+    display: grid; place-items: center; font-size: 15px; flex-shrink: 0;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .icon-btn:hover { background: var(--surface2); border-color: var(--primary); }
+
+  .ledger-bar {
+    margin-top: 11px; display: flex; align-items: center; gap: 8px;
+  }
+  .ledger-select {
+    flex: 1; min-width: 0; appearance: none; border: 1px solid var(--line); cursor: pointer;
+    background: var(--surface); color: var(--text);
+    font-size: 14px; font-weight: 500; font-family: inherit;
+    padding: 8px 30px 8px 12px; border-radius: 9px;
+    background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239aa2b1' stroke-width='2.5' stroke-linecap='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 9px center; background-size: 15px;
+  }
+  .ledger-select option { color: var(--text); background: var(--surface); }
+  .ledger-manage {
+    background: var(--surface); border: 1px solid var(--line); color: var(--text);
+    padding: 8px 13px; border-radius: 9px; font-size: 13px; cursor: pointer;
+    font-family: inherit; white-space: nowrap; transition: background 0.15s, border-color 0.15s;
+  }
+  .ledger-manage:hover { background: var(--surface2); border-color: var(--primary); }
+
+  /* ===== 主体 ===== */
+  .wrap { max-width: 640px; margin: 0 auto; padding: 16px; }
+
+  /* 统计卡：用中性深色卡片（不用主色铺底）。
+     深色主题下，大面积的主色铺底 + 主色数字 + 主色柱子会糊成一整块蓝，
+     整页重心被拉走。改成「卡片=中性色、数字=主色」，蓝色只做点缀。 */
+  .stats {
+    background: var(--card);
+    border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 14px 16px; margin-bottom: 14px;
+  }
+  .stats-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .stat { text-align: center; min-width: 0; }
+  .stat + .stat { border-left: 1px solid var(--line); }
+  .stat-label { font-size: 11.5px; color: var(--muted); margin-bottom: 3px; }
+  .stat-value { font-size: 19px; font-weight: 700; color: var(--primary);
+                word-break: break-all; line-height: 1.2; }
+  .stat-value.sm { font-size: 15px; }
+
+  .chart {
+    display: flex; align-items: flex-end; gap: 3px; height: 40px;
+    margin-top: 13px; padding-top: 11px; border-top: 1px solid var(--line);
+  }
+  /* 柱子：从下往上长的实心块。
+     深色主题下用「半透明主色」——比实心主色轻，压在深色卡片上像数据，
+     不会像没加载出来的骨架屏，也不会跟上面的蓝色数字抢视线。 */
+  .chart-bar {
+    flex: 1; min-width: 3px; border-radius: 2px 2px 0 0;
+    background: var(--primary); opacity: 0.55;
+    transition: opacity 0.15s, filter 0.15s;
+  }
+  .chart-bar:hover { opacity: 0.95; }
+  .chart-empty { font-size: 12px; color: var(--muted); margin-top: 11px;
+                 padding-top: 11px; border-top: 1px solid var(--line); }
+
+  /* ===== 分区 ===== */
+  .section { margin-bottom: 22px; }
+  /* 标题行可点开/收起。用 <button> 而不是 <div>：
+     自带键盘可达性与回车/空格触发，不用手写 keydown。 */
+  .section-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; margin-bottom: 10px; padding: 8px 10px;
+    width: 100%; text-align: left; cursor: pointer; font-family: inherit;
+    font-size: 14px; line-height: 1.35;   /* 覆盖浏览器对 button 的默认字号 */
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: var(--radius); color: var(--text);
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .section-head:hover { border-color: var(--primary); background: var(--surface); }
+  .section-title { font-size: 14px; font-weight: 600; color: var(--text);
+                   display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .section-count { font-size: 12px; color: var(--faint); font-weight: 400; }
+
+  /* 折叠箭头：收起 ▸ / 展开 ▾，用旋转做过渡（比换字符平滑） */
+  .fold-arrow {
+    display: inline-block; font-size: 11px; color: var(--muted);
+    transform: rotate(0deg); transition: transform 0.2s;
+  }
+  .section-head[aria-expanded="true"] .fold-arrow { transform: rotate(90deg); }
+  /* 右侧提示文字：收起时显示，展开后淡出（避免占位跳动，用 visibility） */
+  .fold-hint { font-size: 12px; color: var(--faint); white-space: nowrap; }
+  .section-head[aria-expanded="true"] .fold-hint { visibility: hidden; }
+
+  /* 折叠体：收起时整块不占位（display:none），不残留空白 */
+  .fold-body { display: none; }
+  .section.open .fold-body { display: block; }
+  /* 排行榜本体是 .card，收起时也要把圆角边框一起收掉 */
+  .section:not(.open) #rankList { display: none; }
+
+  .card {
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: var(--radius); box-shadow: var(--shadow);
+  }
+
+  /* 排行榜 */
+  .rank-row {
+    display: grid; grid-template-columns: 26px 1fr auto;
+    align-items: center; gap: 10px;
+    padding: 11px 14px; border-bottom: 1px solid var(--line);
+  }
+  .rank-row:last-child { border-bottom: none; }
+  .rank-no {
+    width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center;
+    font-size: 11px; font-weight: 700; background: var(--surface); color: var(--muted);
+  }
+  .rank-no.top { background: var(--gold); color: var(--gold-ink); }
+  .rank-name { font-size: 14.5px; font-weight: 500; overflow: hidden;
+               text-overflow: ellipsis; white-space: nowrap; }
+  .rank-meta { font-size: 11.5px; color: var(--faint); margin-top: 1px; }
+  .rank-net { font-size: 15px; font-weight: 700; text-align: right; white-space: nowrap; }
+
+  /* 牌局卡 */
+  .game { margin-bottom: 10px; overflow: hidden; }
+  .game-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; padding: 13px 14px; cursor: pointer; user-select: none;
+  }
+  .game-head:active { background: var(--primary-softer); }
+  .game-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  .game-date { font-size: 15px; font-weight: 600; white-space: nowrap; }
+  .chip {
+    font-size: 11px; padding: 1.5px 7px; border-radius: 20px;
+    background: var(--surface); color: var(--muted); white-space: nowrap; flex-shrink: 0;
+  }
+  .chip.bad { background: rgba(255,92,92,0.14); color: var(--win); }
+  .game-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .game-flow { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+  .game-flow b { font-size: 14px; margin-left: 3px; }
+  .caret { color: var(--faint); font-size: 11px; transition: transform 0.2s; }
+  .caret.open { transform: rotate(180deg); }
+
+  .game-body { padding: 0 14px 13px; border-top: 1px solid var(--line); }
+  .game-toolbar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; padding: 10px 0;
+  }
+  .game-buyin { font-size: 12.5px; color: var(--muted); }
+  .toolbar-actions { display: flex; gap: 4px; }
+  .mini-btn {
+    background: none; border: none; cursor: pointer; padding: 5px 8px;
+    border-radius: 7px; font-size: 12.5px; color: var(--muted); font-family: inherit;
+  }
+  .mini-btn:hover { background: var(--surface2); color: var(--text); }
+  .mini-btn.danger:hover { background: rgba(255,92,92,0.12); color: var(--win); }
+
+  table.detail { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  table.detail th {
+    font-weight: 400; color: var(--muted); font-size: 12px;
+    padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: left;
+  }
+  table.detail th.r, table.detail td.r { text-align: right; }
+  table.detail td { padding: 7px 4px; border-bottom: 1px solid var(--line-soft); }
+  table.detail tr:last-child td { border-bottom: none; }
+  .cell-net { font-weight: 700; }
+
+  .balance-row {
+    display: flex; align-items: center; justify-content: flex-end;
+    gap: 12px; margin-top: 9px; font-size: 12px; color: var(--muted);
+  }
+
+  /* 空状态 */
+  .empty { padding: 34px 20px; text-align: center; }
+  .empty-icon { font-size: 30px; margin-bottom: 10px; opacity: 0.4; }
+  .empty-title { font-size: 14.5px; font-weight: 500; margin-bottom: 4px; }
+  .empty-desc { font-size: 12.5px; color: var(--muted); line-height: 1.6; }
+
+  /* ===== 底部按钮 ===== */
+  .fab-bar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+    background: rgba(15,17,21,0.92); backdrop-filter: blur(10px);
+    border-top: 1px solid var(--line);
+    padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  }
+  .fab-inner { max-width: 640px; margin: 0 auto; display: flex; gap: 9px; }
+  .btn {
+    border: none; border-radius: 10px; padding: 12px 16px; font-size: 14.5px;
+    font-family: inherit; font-weight: 500; cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    transition: filter 0.15s, background 0.15s;
+  }
+  .btn-primary { background: var(--primary); color: var(--primary-ink); flex: 1; font-weight: 600; }
+  .btn-primary:hover { filter: brightness(1.07); }
+  .btn-primary:disabled { background: var(--surface2); color: var(--faint); cursor: not-allowed; filter: none; }
+  .btn-ghost { background: var(--surface); color: var(--text); }
+  .btn-ghost:hover { background: var(--surface2); }
+  .btn-danger { background: var(--win); color: var(--primary-ink); font-weight: 600; }
+  .btn-danger:hover { filter: brightness(1.07); }
+  .btn-sm { padding: 8px 13px; font-size: 13.5px; }
+  .btn-block { width: 100%; }
+
+  /* ===== 弹窗 ===== */
+  .overlay {
+    position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,0.6);
+    display: flex; align-items: flex-end; justify-content: center;
+    padding: 0; opacity: 0; pointer-events: none; transition: opacity 0.2s;
+  }
+  .overlay.show { opacity: 1; pointer-events: auto; }
+  .sheet {
+    background: var(--card); width: 100%; max-width: 640px;
+    border-radius: 16px 16px 0 0; max-height: 92vh;
+    display: flex; flex-direction: column;
+    transform: translateY(100%); transition: transform 0.24s cubic-bezier(0.32,0.72,0,1);
+  }
+  .overlay.show .sheet { transform: translateY(0); }
+  .sheet-head {
+    padding: 16px 18px 12px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    flex-shrink: 0;
+  }
+  .sheet-title { font-size: 16px; font-weight: 600; }
+  .sheet-close {
+    background: var(--surface); border: none; width: 30px; height: 30px;
+    border-radius: 8px; cursor: pointer; color: var(--muted); font-size: 17px;
+    display: grid; place-items: center; line-height: 1;
+  }
+  .sheet-body { padding: 16px 18px; overflow-y: auto; flex: 1; }
+  .sheet-foot {
+    padding: 12px 18px calc(12px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--line); display: flex; gap: 9px; flex-shrink: 0;
+  }
+  /* 竖排 foot：输入行在上、说明文字在下，整体钉在面板底部。
+     给「人员管理」用 —— 输入框必须永远可见，不能跟着标签列表滚走。 */
+  .sheet-foot-col { flex-direction: column; gap: 8px; }
+  /* 钉在 foot 里的说明文字：不用 .note 的上边距（foot 已经有 padding 和 gap 了） */
+  .note-tight { margin-top: 0; }
+
+  /* 面板里唯一的滚动区就是它，给个上限免得撑破面板。
+     配合 .sheet 的 max-height，标签多时这里出滚动条，而不挤压 foot。 */
+  .sheet-body:has(.plist) { min-height: 0; }
+
+  @media (min-width: 561px) {
+    .overlay { align-items: center; padding: 20px; }
+    .sheet { border-radius: 16px; max-height: 86vh; }
+  }
+
+  /* 表单 */
+  .field { margin-bottom: 15px; }
+  .field:last-child { margin-bottom: 0; }
+  .label { display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 6px; }
+  /* 字段下方的补充说明：比 label 更弱，不抢视线 */
+  .field-hint { font-size: 11.5px; color: var(--faint); margin-top: 5px; line-height: 1.5; }
+  .input {
+    width: 100%; padding: 10px 12px; font-size: 15px; font-family: inherit;
+    border: 1px solid var(--line); border-radius: 9px; background: var(--surface);
+    color: var(--text); outline: none; transition: border-color 0.15s;
+  }
+  .input:focus { border-color: var(--primary); }
+  .input::placeholder { color: var(--faint); }
+
+  /* 行内实时盈亏：随输入即时变化，不占输入位 */
+  .pf {
+    text-align: right; font-variant-numeric: tabular-nums;
+    font-size: 14px; font-weight: 600; color: var(--faint);
+    padding-right: 2px; min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .pf.up { color: var(--win); }
+  .pf.down { color: var(--lose); }
+  /* 已买入、但结余还没填 → 结果未知。用最弱的色，且比「—」更有信息量 */
+  .pf.pending { color: var(--faint); font-weight: 500; font-size: 11px; }
+
+  /* 总买入：派生值，不可编辑。
+     ★ 它同时是「买入明细」的入口 —— 点它展开/收起每一笔。
+       为什么是它：明细开关原来是个 13×13px 的小角标，压在输入框右上角，
+       手机根本点不中；把它挪到输入框下方独立成行虽然点得到了，却把每行
+       撑成两行、看着很乱。「总买入 = 各笔之和」本来就是这些笔的汇总，
+       点汇总看明细也最自然，而且它有整个单元格那么大（58~62 × 37~41px）。
+     浅虚线底边是「可点」的暗示（沿用原来 .tb 的视觉，只是现在能点）。 */
+  .tb {
+    /* 不用 flex：角标要绝对定位叠在数字右上角（见 .tb-badge），
+       横向不能被它占位 —— 总买入列在窄屏只有 58px，
+       「400.00 + 角标 + 箭头」并排会超宽，数字被截成「400...」。 */
+    position: relative;
+    /* 右内边距 0：这 4px 让给数字本身（见 .tb-num 的让位说明） */
+    width: 100%; padding: 9px 0 9px 0;
+    font-family: inherit; font-size: 13.5px; font-weight: 600;
+    font-variant-numeric: tabular-nums; color: var(--muted);
+    /* ★ 这里**不能**写 overflow:hidden —— 它会把下面 ::after 的热区外扩
+       一起裁掉，扩了等于没扩（实测热区仍是 42×35）。
+       截断交给内部的 .tb-num（它自己有 overflow:hidden + ellipsis）就够了。 */
+    text-align: right; white-space: nowrap;
+    background: none; border: none; border-bottom: 1px dashed var(--line);
+    cursor: pointer; transition: color 0.15s, border-color 0.15s;
+  }
+  /* ★ 热区只往**上下**扩，不往左右扩：
+     v20 把总买入列从 55/62px 收到 42/44px（改整元省出来的），
+     入口的横向命中区跟着变窄（42×35）。左右两侧分别是「买入」和「结余」
+     两个输入框 —— 往左右扩会抢走它们的点击，宁可不扩。
+     上下相邻行之间有 9~11px 的 margin，扩 4px 不会误伤，
+     于是命中区从 42×35 补到 42×43（接近 44 的触控下限）。 */
+  .tb[aria-expanded]::after {
+    content: ''; position: absolute; left: 0; right: 0; top: -4px; bottom: -4px;
+  }
+  /* 只有真的能点开时才给 hover 反馈（没记过买入的行不可点） */
+  .tb[aria-expanded]:hover { color: var(--text); border-bottom-color: var(--primary); }
+  /* 展开态：底边变实线 + 主色，明确「现在是开着的」 */
+  .tb[aria-expanded="true"] {
+    color: var(--text); border-bottom-color: var(--primary);
+    border-bottom-style: solid;
+  }
+  /* 数字本体：块级、右对齐。
+     ★ 让位宽度是算出来的，不是拍的（踩过两次坑，记下来）：
+       坑 1：给 14px 让位 → 窄屏 58−14 = 44px < 「400.00」需要的 47px
+             → ellipsis 反而被这 14px 自己触发，显示成「400...」
+       坑 2：干脆 0 让位 → 角标绝对定位在 right:0、数字右对齐，
+             实测两者在最后一位上重叠 4~6×3~4px，压住了数字右上角
+       正解：让位置**刚好等于角标的实际宽**（8px）。
+             窄屏总买入列 58px − tb 右内边距 4px = 54px 可用，
+             54 − 8 = 46px…… 差 1px 就又截断了，所以同时把
+             .tb 的右内边距压到 0，把 4px 也还给数字：
+             58 − 0 − 8 = 50px ≥ 47px ✓ 刚好够，且不再重叠。 */
+  .tb-num { display: block; padding-right: 8px; overflow: hidden; text-overflow: ellipsis; }
+  /* 笔数角标：纯信息，不是按钮 —— 极小，像上标一样骑在数字右上角。
+     ★ 它是**绝对定位**的，横向不占位；数字靠 .tb-num 的 8px 右内边距
+       给它腾出一条刚好等宽的槽（见上面的说明），所以两者不重叠。
+     ★ top 用 -3px 而不是 1px：角标整体上提，让它的下沿**完全离开**
+       数字的字身高度区间。实测数据（320px）：
+         top:1px  → 数字 y[364,380]，角标 y[354,365] → 垂直重叠 1px
+         top:-3px → 角标整体再上移 4px，下沿 361 < 数字上沿 364 ✓ 不再交叉
+       横向本来就已经错开（数字靠 8px 右内边距让出槽位）。
+     它只回答「记了几笔」；点它没有任何反应（点击穿透到父级 .tb，照样展开明细）。
+     ★ 和最初那个 13×13 的角标不同：那个是唯一的入口、必须点中它；
+       现在真正的入口是整格 .tb（58~72 × 35~41px），角标退化成纯装饰。 */
+  .tb-badge {
+    position: absolute; top: -3px; right: 0;
+    font-size: 8.5px; line-height: 1; font-weight: 700;
+    padding: 2px 2px; border-radius: 5px;
+    background: var(--primary-soft); color: var(--muted);
+    font-variant-numeric: tabular-nums; pointer-events: none;
+  }
+  .tb[aria-expanded="true"] .tb-badge { background: var(--primary); color: var(--primary-ink); }
+
+  /* 人员行：人员 + 买入 + 总买入 + 结余 + 盈亏 + 删除（全平台 6 列）
+     数字列固定宽（按 16px 字号的真实内容长度算好），只有「人员」列吃剩余空间；
+     但必须用 minmax 给它设上限，否则宽屏下它把数字列挤没、看着「很怪」。
+     最窄桌面：561px 视口 − overlay 40 − body 36 = 485px 可用，
+     列和 64+86+72+68+70+20 = 380 + 5×5 间隙 = 405px ✓ 余 80px（很宽松）。
+     手机端不用再藏列 —— 6 列本身就够窄了。
+     ★ 「买入」列 86px 是六列里最宽的：只有它装了**两个**控件
+       （输入框 + 叠在上面的 + 按钮），按钮吃掉约 32px 右内边距，
+       剩下的才是能写字的宽度。宽屏 86 − 6 − 36 = 44px，够写「2000」。 */
+  .prow {
+    display: grid;
+    grid-template-columns: minmax(64px, 1.4fr) 86px 72px 68px 70px 20px;
+    gap: 5px; align-items: center; margin-bottom: 9px;
+  }
+  /* ★ 单行：明细入口挪到「总买入」列后，买入格不再有第二行，
+     所有单元格回到第 1 行。展开明细时才由 .rbd 另起第 2 行。 */
+  .prow > * { grid-row: 1; }
+  .prow-head {
+    display: grid;
+    grid-template-columns: minmax(64px, 1.4fr) 86px 72px 68px 70px 20px;
+    gap: 5px; font-size: 11px; color: var(--muted); margin-bottom: 6px;
+  }
+  .prow-head > div { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prow-head .r { text-align: right; }
+  /* ★ 输入控件一律 16px —— iOS Safari 只对 font-size < 16px 的 input/select
+     触发「聚焦强制放大整页」，字号够 16px 就不会被顶大。
+     纯展示的 .tb / .pf 是 <div>，iOS 不管它们，所以那几个可以继续小字号。 */
+  .prow select, .prow input {
+    width: 100%; padding: 9px 7px; font-size: 16px; font-family: inherit;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--surface);
+    color: var(--text); outline: none; min-width: 0;
+  }
+  .prow select:focus, .prow input:focus { border-color: var(--primary); }
+  .prow input { text-align: right; }
+  /* ★ 人员下拉自带一个「自绘箭头」：
+     原生 select 的下拉箭头在 Chromium 上要占掉约 16px 的**内容宽度**，
+     而这恰恰是从名字身上扣的 —— 人员列本来就最紧（3 字名 49px），
+     16px 相当于砍掉一个字。所以这里 appearance:none 去掉原生箭头，
+     用 background-image 画一个 8px 的小三角贴在右侧（只占 10px，省 6px）。
+     padding-right 相应留 12px 给这个自绘箭头。 */
+  .prow select {
+    padding-right: 12px;
+    appearance: none; -webkit-appearance: none; -moz-appearance: none;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='8' height='5'%3E%3Cpath d='M0 0l4 5 4-5z' fill='%236b7482'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 3px center;
+    background-size: 8px 5px;
+  }
+  /* iOS 上 appearance:none 后仍可能露出原生箭头，再兜一层 */
+  .prow select::-ms-expand { display: none; }
+  .prow .del {
+    background: none; border: none; cursor: pointer; color: var(--faint);
+    font-size: 16px; padding: 4px 0; border-radius: 6px; line-height: 1;
+    /* ★ 删除列只有 13~20px 宽，× 本体实测热区 13×23 —— 远小于 44×44 的
+       触控标准，拇指基本戳不中（旁边就是盈亏数字，还可能误触）。
+       沿用本项目其它小控件的做法：用 ::after 做**透明热区外扩**，
+       视觉仍是那个小 ×，但命中区扩到约 29×43。
+       往左/上/下扩（往右会顶出面板边界）。 */
+    position: relative;
+  }
+  .prow .del::after {
+    content: ''; position: absolute; left: -8px; right: 0; top: -10px; bottom: -10px;
+  }
+  .prow .del:hover { color: var(--win); background: rgba(255,92,92,0.12); }
+
+  /* 买入格子：只有一个输入框（右侧叠 + 按钮），单行。
+     ★ 买入明细的入口已经挪到「总买入」那一列了（见上面的 .tb）——
+       这里不再有第二行，行高回到单行。 */
+  .rbc { min-width: 0; }
+  .rbc-in { position: relative; display: flex; min-width: 0; }
+  /* 输入框右侧要给 + 按钮让出位置，否则文字会钻到按钮底下（深色下尤其明显）。 */
+  .rbc-in input { padding-left: 6px !important; padding-right: 36px !important; text-align: right; }
+  /* + 按钮：实心主色小块。深色主题下必须真的"实心"，
+     用半透明底会在深色输入框上糊成一团，看着像乱码。
+     ★ 从 17×24 加宽到 30×28：以前它挤在 22px 的右侧内边距里，
+       宽度只有 17px，拇指很难独立命中（旁边 2px 就是输入框边缘）。 */
+  .rbb {
+    position: absolute; right: 2px; top: 50%; transform: translateY(-50%);
+    width: 30px; height: 28px; border: none; border-radius: 6px;
+    background: var(--primary); color: var(--primary-ink); cursor: pointer;
+    font-size: 16px; font-weight: 700; line-height: 1; padding: 0;
+    font-family: inherit; display: flex; align-items: center; justify-content: center;
+    transition: filter 0.15s;
+  }
+  /* ★ + 按钮的透明热区：向左、向上、向下各扩 8px。
+     视觉还是那个 30×28 的主色小块（深色主题下它必须实心才看得清），
+     但实际命中区域变成约 40×44px，接近 44 的触控标准。
+     只往左/上/下扩 —— 往右会顶出输入框边界，可能压到别的列。 */
+  .rbb::after {
+    content: ''; position: absolute; left: -8px; right: 0; top: -8px; bottom: -8px;
+  }
+  .rbb:hover { filter: brightness(1.12); }
+  .rbb:active { transform: translateY(-50%) scale(0.92); }
+
+  /* 买入明细：跨满整行，挂在行的下面（第 2 行）。 */
+  .rbd {
+    grid-row: 2; grid-column: 1 / -1;
+    margin-top: 6px; padding: 9px 11px; border-radius: 8px;
+    background: var(--primary-softer); font-size: 12px; color: var(--muted);
+    line-height: 1.9;
+  }
+  .rbi {
+    display: inline-flex; align-items: center; gap: 3px;
+    background: var(--surface2); border: 1px solid var(--line); border-radius: 6px;
+    padding: 2px 4px 2px 8px; margin-right: 6px; white-space: nowrap;
+    font-variant-numeric: tabular-nums; color: var(--text);
+  }
+  .rbx {
+    background: none; border: none; cursor: pointer; color: var(--faint);
+    font-size: 13px; line-height: 1; padding: 0 2px;
+    /* ★ 撤销「×」视觉上很小（11.6×13px），手指点不中。
+       不改视觉尺寸（明细面板本来就很挤，放大图标会挤掉金额），
+       改用透明热区外扩：实际命中区域约 24×34px。
+       面板里的 chip 之间有空隙，外扩不会跟隔壁的 × 打架。 */
+    position: relative;
+  }
+  .rbx::after {
+    content: ''; position: absolute; left: -6px; right: -6px; top: -10px; bottom: -10px;
+  }
+  .rbx:hover { color: var(--win); }
+  /* 明细 chip：给外扩后的热区留出间距，避免相邻两个 × 的热区重叠。
+     （否则点右边那个可能命中左边的。） */
+  .rbi { margin-right: 12px; }
+  .rbh { display: block; margin-top: 4px; font-size: 11px; color: var(--faint); }
+
+  /* 窄屏（≤480px）：
+     ① 输入框保持 16px（iOS 防聚焦放大，见上面的注释）；
+     ② 6 列本来就窄，不用藏列了；
+     ③ 列宽重算：390px 屏 − 24 内边距 = 366px 可用，
+        列和 62+76+62+50+60+14 = 324 + 5×3 间隙 = 339px ✓ 余 27px（给人员列）。
+     ★ 「买入」列 68 → 76：实测它的文字可写宽度只有 29px，
+       连「1000」（需 35px）都写不下 —— 而这列本来就该放四位数。
+       76px 后文字宽 76 − 5(左) − 34(让给按钮) = 37px ✓ 够写 1000。
+       这 8px 从「结余」匀出（58 → 50：3 位数只需 36px，富余很多）。
+     ★ v20 再分配：「总买入 / 盈亏」改整元显示后各自腾出 19 / 16px
+       （实测：整元最坏「20000」34px + 8 角标槽 = 44；「+20000」44px），
+       这两列从 62/60 收到 44/46，腾出的 35px 全部给买入框与结余：
+         买入 76 → 92（文字 37 → 53px，能写「10000」43px）
+         结余 50 → 58（可写 52px）
+       人员列由 1.4fr 吸收剩余：390px 屏拿到 97px，430px 拿到 137px。 */
+  @media (max-width: 480px) {
+    .sheet-body { padding: 16px 12px; }
+
+    .prow,
+    .prow-head {
+      grid-template-columns: minmax(62px, 1.4fr) 92px 44px 58px 46px 14px;
+      gap: 3px;
+    }
+    .prow { margin-bottom: 11px; }
+    .prow-head { font-size: 10px; }
+
+    /* ★ 输入框不缩小（保持全局 16px）；只有纯展示的 .tb / .pf 才收字号 */
+    .prow select, .prow input { padding: 8px 4px; }
+    /* ★ 不能写 padding-right: 1px —— 那是 v19 加自绘下拉箭头之前的遗留，
+       它会把给箭头留的 12px 抹掉，箭头（8px，画在 right 3px）直接压在名字上。
+       v19 只量了 320px 那一档，漏了这里；check-names 又因为硬编码
+       「原生箭头 16px」把问题盖住了。现在 12px 与全局一致。 */
+    .prow select { padding-right: 12px; }
+    .prow .del { font-size: 15px; }
+    .pf { font-size: 12.5px; }
+    .tb { font-size: 12.5px; }
+    .rbc-in input { padding-left: 5px !important; padding-right: 34px !important; }
+    /* + 按钮不再随屏幕变窄而缩小 —— 越窄的屏越是单手拇指操作，
+       更需要它够大。只收 2px 高度。 */
+    .rbb { width: 29px; height: 27px; font-size: 15px; right: 1px; }
+    /* 总买入列在窄屏更挤：角标收到最小（它是绝对定位的上标，不占横向） */
+    .tb-badge { font-size: 8px; padding: 2px 2.5px; }
+  }
+
+  /* 超窄屏（380px 及以下，覆盖 320/360）：
+     ★ 这里原来算错了 —— 「列和 317 ≤ 336」只对 360px 成立，
+       320px 可用只有 296px，317 直接**溢出 21px**。溢出后浏览器
+       回头挤 minmax 那一列（人员列），名字才被压扁 ——
+       「人名要压缩」的观感来源其实是这个，不是名字太长。
+     ★ 各列按实测字宽定需求（16px 字号）：
+         人员：3 字名 49px + 左内边距 3 + 自绘箭头 10 = 62
+               （原生箭头要占 16px，换成自绘省 6px，见 .prow select 注释）
+         买入：3 位数「600」26px + 左 4 + 右 32（让给 + 按钮）= 62
+         总买入：★ v20 改整元后 34（「20000」）+ 角标槽 8 = 42
+                （改前是「600.00」47 + 8 = 55，白占 13px）
+         结余：4 位数「1200」35px + 内边距 6 + 余量 = 52（v20 由 45 上调）
+         盈亏：★ v20 改整元后「+20000」44px → 42（改前「+620.00」52 → 54）
+         删除：× 12 + 余量 = 13
+     ★ v20 再分配：总买入 55→42、盈亏 54→42 腾出 25px，
+       全给买入框（62 → 80，文字 26 → 44px，能写「10000」43px）与结余（45 → 52）。
+       固定列和 229 + 10 间隙 = 239 → 360px 屏人员列拿到 97px，宽裕。
+     ★ 「去掉两位小数」是这次的关键：数字列一口气省下 25px，
+       比之前在各列之间来回挪 1~2px 有效得多 ——
+       牌局的买入本来就是整元，两位小数在窄屏纯属浪费。 */
+  @media (max-width: 380px) {
+    .sheet-body { padding: 14px 12px; }
+    .prow,
+    .prow-head {
+      grid-template-columns: minmax(62px, 1.4fr) 80px 42px 52px 42px 13px;
+      gap: 2px;
+    }
+    .prow-head { font-size: 9.5px; }
+    .prow select, .prow input { padding: 7px 3px; }
+    /* ★ 不要写 padding-right:0 —— 那会把上面自绘箭头的 12px 位置抹掉，
+       箭头会压在名字上。窄屏只收小一点，仍给箭头留位。 */
+    .prow select { padding-right: 10px; background-position: right 2px center; }
+    .pf { font-size: 12px; }
+    .tb { font-size: 12px; }
+    .rbc-in input { padding-left: 4px !important; padding-right: 32px !important; }
+    .rbb { width: 28px; height: 26px; font-size: 14px; right: 1px; }
+    .tb-badge { font-size: 7.5px; padding: 1.5px 2px; }
+  }
+
+  /* 极窄屏（340px 及以下，实际主要是 320px）：
+     ★ 为什么单独一档 —— 320px 的行宽只有 296px、扣掉 10px 间隙后**上限 286px**，
+       比 360px（上限 326）少整整 40px。硬套上面那套就会溢出，
+       溢出后浏览器回头挤 minmax 那一列（人员列），名字被压扁 —— 老 bug。
+     ★ v19 时这一档被迫做减法（只能写 3 位数）；
+       **v20 去掉两位小数后，320px 也能写 4 位数了**：
+         买入   72：文字 72 − 4 − 30（让给 + 按钮）= 38px
+                    → 「1000」35px ✓（v19 只有 26px，写不下）
+         总买入 42：整元「20000」34 + 角标槽 8（v19 是 55，白占 13px）
+         结余   48：可写 42px → 「1200」35px ✓（v19 只有 34px，差 1px）
+         盈亏   42：整元「+20000」44 → 给 42（v19 是 54）
+         删除   13：× 12
+         固定列和 217 + 10 间隙 = 227
+       → 人员列由 1.4fr 吸收剩余：296 − 227 = **69px**
+         名字可用 69 − 3 − 10（自绘箭头）= 56px → **3 字名（49px）放得下了**
+         （v19 只有 60px 列宽 / 41px 名字空间，3 字名会截）
+     ✓ 320px 剩 0px 余量，仍是物理最紧的一档，但已不再需要让掉 4 位数。
+       唯一剩下的取舍：**4 字名（64px）在 320px 下仍会截**（差 8px）。 */
+  @media (max-width: 340px) {
+    .prow,
+    .prow-head {
+      grid-template-columns: minmax(58px, 1.4fr) 72px 42px 48px 42px 13px;
+      gap: 2px;
+    }
+    /* 买入右内边距从 32 收到 30，把那 2px 还给文字（凑够 26px 写「600」） */
+    .rbc-in input { padding-left: 4px !important; padding-right: 30px !important; }
+    /* 极窄屏把 + 按钮再收 1px，给文字多留一点 */
+    .rbb { width: 27px; }
+  }
+
+  .calc-hint {
+    display: flex; align-items: center; justify-content: space-between;
+    /* 未平衡时会放 4 段（总投入 / 赢 / 输 / 差）甚至再加「N 人未结算」，
+       窄屏一行放不下。允许换行 + 行间距，避免挤压或溢出。 */
+    flex-wrap: wrap; gap: 4px 12px;
+    /* 上边距：它上面是「+ 选择人员上场」，要拉开；
+       下边距：它下面是说明文字，也要分开。（以前上边距写在内联 style 里） */
+    padding: 10px 12px; border-radius: 9px; font-size: 13px;
+    margin: 14px 0; background: var(--primary-softer); color: var(--muted);
+  }
+  .calc-hint.bad { background: rgba(255,92,92,0.12); color: var(--win); }
+  /* 账目不平：数据合法但没配平，用橙色提醒而非红色报错 */
+  .calc-hint.warn { background: rgba(245,196,81,0.14); color: var(--gold); }
+  .calc-hint b { font-weight: 700; }
+  /* 「差 X 未平」是这一栏里唯一需要你动手的地方，加重一档把它顶出来 ——
+     赢/输两个数只是背景，差多少才是要处理的事。
+     nowrap：「差 ¥500.00」和「未平」拆到两行会读断（「未平」孤零零挂在下一行），
+     这一小段无论如何要作为一个整体存在。 */
+  .calc-hint .sum-gap { font-weight: 700; white-space: nowrap; }
+  /* 「N 人未结算」提示：比正文更弱，只是提醒别把未填的当成输了 */
+  .pending-tip { font-size: 11.5px; color: var(--faint); white-space: nowrap; }
+
+  /* 人员管理列表 */
+  .plist { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .ptag {
+    display: inline-flex; align-items: center; gap: 7px;
+    background: var(--surface); border-radius: 20px; padding: 6px 8px 6px 13px;
+    font-size: 13.5px;
+  }
+  .ptag .x {
+    background: none; border: none; cursor: pointer; color: var(--faint);
+    font-size: 15px; line-height: 1; padding: 0 2px;
+  }
+  .ptag .x:hover { color: var(--win); }
+
+  /* 选人列表：可多选。点一行切换选中态（不再是一点就进场）。 */
+  .picklist { display: flex; flex-direction: column; gap: 7px; }
+  .pick {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    width: 100%; text-align: left; cursor: pointer; font-family: inherit;
+    background: var(--surface); border: 1px solid var(--line); color: var(--text);
+    padding: 11px 13px; border-radius: 10px; font-size: 14.5px;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .pick:hover:not(:disabled) { border-color: var(--primary); background: var(--surface2); }
+  /* 已在场上的人：置灰不可点，并说明原因（而不是直接消失，否则用户会以为没这个人） */
+  .pick:disabled { opacity: 0.42; cursor: default; }
+  .pick-hint { font-size: 11.5px; color: var(--muted); }
+
+  /* 选中态：左侧一个勾选方块 + 描边转主色 + 底色提亮。
+     三重信号（勾、边、底），因为深色界面上单靠颜色差不够醒目。 */
+  .pick-left { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .pick-box {
+    width: 19px; height: 19px; border-radius: 5px; flex-shrink: 0;
+    border: 1.5px solid var(--line); background: transparent;
+    display: grid; place-items: center;
+    font-size: 12px; font-weight: 800; color: var(--gold-ink);
+    transition: background 0.15s, border-color 0.15s;
+  }
+  .pick.on { border-color: var(--primary); background: var(--surface2); }
+  .pick.on .pick-box { background: var(--primary); border-color: var(--primary); }
+  /* 选中项里已上场的人不该出现（已上场根本不可选），所以无需额外态 */
+
+  /* 录入表空态：新牌局打开时一行都没有 */
+  .rows-empty {
+    text-align: center; font-size: 13px; line-height: 1.7; color: var(--muted);
+    padding: 26px 14px; margin-bottom: 12px;
+    border: 1px dashed var(--line); border-radius: var(--radius);
+  }
+  .rows-empty b { color: var(--primary); font-weight: 600; }
+
+  /* 账本列表 */
+  .llist { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+  .litem {
+    display: flex; align-items: center; gap: 11px; padding: 12px 14px;
+    border: 1px solid var(--line); border-radius: 10px; cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .litem:hover { border-color: var(--primary); background: var(--primary-softer); }
+  .litem.current { border-color: var(--primary); background: var(--primary-softer); }
+  .litem-main { flex: 1; min-width: 0; }
+  .litem-name { font-size: 14.5px; font-weight: 500; overflow: hidden;
+                 text-overflow: ellipsis; white-space: nowrap; }
+  .litem-meta { font-size: 11.5px; color: var(--faint); margin-top: 2px; }
+  .litem-check { color: var(--primary); font-weight: 700; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: calc(96px + env(safe-area-inset-bottom));
+    transform: translate(-50%, 12px); z-index: 90;
+    background: rgba(0,0,0,0.88); color: var(--text); border: 1px solid var(--line); padding: 10px 18px;
+    border-radius: 10px; font-size: 13.5px; max-width: 84vw; text-align: center;
+    opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  .note { font-size: 12px; color: var(--faint); line-height: 1.6; margin-top: 8px; }
+  .danger-zone { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-inner">
+    <div class="brand-row">
+      <div class="brand">
+        <div class="brand-mark">P</div>
+        <div>
+          <div class="brand-name">扑克记分房</div>
+          <div class="brand-sub">本地记账 · 数据只存在这台设备</div>
+        </div>
+      </div>
+      <button class="icon-btn" id="btnData" title="数据备份与恢复">⇅</button>
+    </div>
+    <div class="ledger-bar">
+      <select class="ledger-select" id="ledgerSelect"></select>
+      <button class="ledger-manage" id="btnLedgers">管理账本</button>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+  <div class="stats" id="stats"></div>
+
+  <div class="section" id="secRank">
+    <button class="section-head" id="headRank" aria-expanded="false" aria-controls="rankList">
+      <div class="section-title">
+        <span class="fold-arrow">▸</span>
+        排行榜 <span class="section-count" id="rankCount"></span>
+      </div>
+      <span class="fold-hint" id="rankHint">点开</span>
+    </button>
+    <div class="card fold-body" id="rankList"></div>
+  </div>
+
+  <div class="section" id="secGames">
+    <button class="section-head" id="headGames" aria-expanded="false" aria-controls="gameList">
+      <div class="section-title">
+        <span class="fold-arrow">▸</span>
+        牌局记录 <span class="section-count" id="gameCount"></span>
+      </div>
+      <span class="fold-hint" id="gamesHint">点开</span>
+    </button>
+    <div class="fold-body" id="gameList"></div>
+  </div>
+</div>
+
+<div class="fab-bar">
+  <div class="fab-inner">
+    <button class="btn btn-ghost" id="btnPlayers">人员</button>
+    <button class="btn btn-primary" id="btnAddGame">+ 记一场牌局</button>
+  </div>
+</div>
+
+<!-- 牌局录入 -->
+<div class="overlay" id="ovGame">
+  <div class="sheet">
+    <div class="sheet-head">
+      <div class="sheet-title" id="gameSheetTitle">记一场牌局</div>
+      <button class="sheet-close" data-close="ovGame">×</button>
+    </div>
+    <div class="sheet-body">
+      <div class="field">
+        <label class="label" for="inDate">日期</label>
+        <input class="input" type="date" id="inDate">
+      </div>
+
+      <!-- ★ 本局买入：这一桌的「一手」多少钱。
+           选人上场时，每人自动按这个数记第一笔买入 —— 省掉逐个填的重复劳动。
+           记在牌局上（game.buyDefault），所以编辑旧牌局时它还在；
+           改了它只影响**之后**加入的人，已记好的买入不动（否则会篡改历史）。 -->
+      <div class="field">
+        <label class="label" for="inBuyDefault">本局买入（每人一手）</label>
+        <input class="input num" type="text" id="inBuyDefault" inputmode="decimal"
+               placeholder="如 200，留空则不自动记"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">
+        <div class="field-hint">选人上场时每人自动记一笔这个金额。留空则不加买入。</div>
+      </div>
+
+      <div id="rowZone"></div>
+
+      <button class="btn btn-ghost btn-sm btn-block" id="btnAddRow">+ 选择人员上场</button>
+
+      <!-- ★ 提示条放在「说明文字」前面。
+           它是**动态的**（每改一个数字就变），说明文字是**静态的**（看一次就够）。
+           以前它在说明后面，被那一大段顶出滚动窗口 ——
+           填完最后一个人的结余，恰恰看不到「差多少」，等于没提示。
+           动态信息必须排在静态说明之前。 -->
+      <div class="calc-hint" id="calcHint"></div>
+
+      <div class="note">
+        <b>买入</b> = 往牌桌上放的本金（上桌带的钱、中途再加的筹码，都是买入，性质完全一样）。
+        每次填新金额后按 <b>回车</b> 或点 <b>+</b>，就记一笔进明细 —— <b>结余不受影响</b>，
+        所以「这些钱是本金」这件事不会被算成输赢。<br>
+        「盈亏」= 结余 − 总买入，随输入实时更新。<b>结余由你自己填</b>（离桌时手里还剩多少），
+        中途加过筹码就自己改成加完之后的数。买入格右上角的<b>数字角标</b>是已买笔数，点它可查看/撤销每一笔。<br>
+        上面设了<b>本局买入</b>的话，选人上场时每人会自动记一笔这个金额，省得逐个填。
+      </div>
+    </div>
+    <div class="sheet-foot">
+      <button class="btn btn-ghost" data-close="ovGame" style="flex:1">取消</button>
+      <button class="btn btn-primary" id="btnSaveGame" style="flex:2">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 人员管理 -->
+<div class="overlay" id="ovPlayers">
+  <div class="sheet">
+    <div class="sheet-head">
+      <div class="sheet-title">人员管理</div>
+      <button class="sheet-close" data-close="ovPlayers">×</button>
+    </div>
+    <!-- ★ 输入行放在 sheet-body **外面**，用 sheet-foot 钉在面板底部。
+         原来它跟标签列表挤在同一个 overflow-y:auto 的滚动区里，
+         人员一多（约 20+ 人，或键盘弹起把可视高度压到 420px 后约 12+ 人），
+         输入框就被标签挤出可视区 —— 手机上表现为「输入框不见了」，
+         而且没有任何提示可以往上滚。实测 30 人 / 420px 高时输入框底边在 481，
+         比视口底 420 还低 61px，必须滚动才能看到。
+         现在标签列表自己滚，输入框永远在面板底部可见。 -->
+    <div class="sheet-body">
+      <div class="plist" id="plist"></div>
+    </div>
+    <div class="sheet-foot sheet-foot-col">
+      <div style="display:flex; gap:8px">
+        <input class="input" id="inPlayerName" placeholder="输入姓名" maxlength="12"
+               style="flex:1" onkeydown="if(event.key==='Enter')addPlayer()">
+        <button class="btn btn-primary" id="btnAddPlayer" style="flex-shrink:0">添加</button>
+      </div>
+      <div class="note note-tight">删除人员不会影响已有牌局记录，历史记录里保留当时的姓名。</div>
+    </div>
+  </div>
+</div>
+
+<!-- 选人上场：点「+ 选择人员上场」后弹出，可多选，确认后一起进场 -->
+<div class="overlay" id="ovPickPlayer">
+  <div class="sheet">
+    <div class="sheet-head">
+      <div class="sheet-title">选人上场</div>
+      <button class="sheet-close" data-close="ovPickPlayer">×</button>
+    </div>
+    <div class="sheet-body">
+      <div class="picklist" id="pickList"></div>
+      <div class="field" style="margin-top:16px; margin-bottom:0">
+        <label class="label" for="inNewPlayerName">不在列表里？新建一个</label>
+        <div style="display:flex; gap:8px">
+          <input class="input" id="inNewPlayerName" placeholder="输入姓名" maxlength="12"
+                 style="flex:1" onkeydown="if(event.key==='Enter')addPlayerThenPick()">
+          <button class="btn btn-primary" id="btnAddPlayerThenPick" style="flex-shrink:0">新建并选中</button>
+        </div>
+      </div>
+    </div>
+    <!-- 确认栏钉在底部：选了几个人、总共记多少买入，一眼可见 -->
+    <div class="sheet-foot">
+      <button class="btn btn-ghost" data-close="ovPickPlayer" style="flex:1">取消</button>
+      <button class="btn btn-primary" id="btnConfirmPick" style="flex:2" disabled>确认上场</button>
+    </div>
+  </div>
+</div>
+
+<!-- 账本管理 -->
+<div class="overlay" id="ovLedgers">
+  <div class="sheet">
+    <div class="sheet-head">
+      <div class="sheet-title">账本管理</div>
+      <button class="sheet-close" data-close="ovLedgers">×</button>
+    </div>
+    <div class="sheet-body">
+      <div class="llist" id="llist"></div>
+      <button class="btn btn-primary btn-block" id="btnNewLedger">+ 新建账本</button>
+      <div class="note">每个账本有独立的人员和牌局记录，用来区分不同的牌局圈子或时间阶段。</div>
+    </div>
+  </div>
+</div>
+
+<!-- 数据备份 -->
+<div class="overlay" id="ovData">
+  <div class="sheet">
+    <div class="sheet-head">
+      <div class="sheet-title">数据备份与恢复</div>
+      <button class="sheet-close" data-close="ovData">×</button>
+    </div>
+    <div class="sheet-body">
+      <button class="btn btn-primary btn-block" id="btnExport" style="margin-bottom:9px">导出备份文件</button>
+      <button class="btn btn-ghost btn-block" id="btnExportCsv" style="margin-bottom:9px">导出牌局明细（Excel 可打开）</button>
+      <button class="btn btn-ghost btn-block" id="btnImport" style="margin-bottom:9px">从备份文件恢复</button>
+      <input type="file" id="fileImport" accept=".json,application/json" style="display:none">
+      <div class="note">
+        JSON 备份包含全部账本、人员与牌局记录，用于完整恢复。<br>
+        Excel 明细是当前账本的逐局流水（人员 / 买入 / 总买入 / 结余 / 盈亏），
+        <b>金额保留两位小数</b>，方便对账。<br>
+        恢复会<b>覆盖</b>当前设备上的全部数据，建议先导出一份当前数据再恢复。
+      </div>
+      <div class="danger-zone">
+        <button class="btn btn-ghost btn-block" id="btnClearGames">清空当前账本的牌局记录</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+
+/* ============================================================
+   金额一律用「整数分」存储与运算，彻底规避浮点误差
+   ============================================================ */
+const KEY = 'poker-ledger:v1';
+
+const uid = () =>
+  (crypto.randomUUID ? crypto.randomUUID()
+    : 'x' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+
+/** 把用户输入的字符串解析为整数分。非法输入返回 0。 */
+function parseCents(str) {
+  if (str === null || str === undefined) return 0;
+  const s = String(str).trim();
+  if (!s) return 0;
+  if (!/^-?\d*(\.\d{0,2})?$/.test(s)) return NaN;   // 最多两位小数
+  const neg = s.startsWith('-');
+  const body = neg ? s.slice(1) : s;
+  const [intPart, decPart = ''] = body.split('.');
+  const cents = (parseInt(intPart || '0', 10) || 0) * 100
+              + parseInt((decPart + '00').slice(0, 2), 10);
+  return neg ? -cents : cents;
+}
+
+/** 整数分 → "1234.50" */
+function fmtCents(cents) {
+  const neg = cents < 0;
+  const abs = Math.abs(cents);
+  const int = Math.floor(abs / 100);
+  const dec = String(abs % 100).padStart(2, '0');
+  return (neg ? '-' : '') + int + '.' + dec;
+}
+
+/** 带符号显示，用于净盈亏 */
+function fmtSigned(cents) {
+  if (cents === 0) return '0.00';
+  return (cents > 0 ? '+' : '') + fmtCents(cents);
+}
+
+/**
+ * 整元显示（四舍五入，不带小数）—— **只给列宽紧张的两列用**：总买入 / 盈亏。
+ *
+ * ★ 为什么要有它：手机窄屏六列里「600.00」比「600」多约 21px，
+ *   这 21px 正是之前「买入框写不下三位数」的根因（钱都被数字列占了）。
+ *   牌局的买入本来就是整元，两位小数在这里纯属浪费宽度。
+ *
+ * ★ 它**只是显示**。内部一律仍是整数分，结算、零和判定、存档全部走精确值，
+ *   不受影响 —— 所以「已平衡 / 差 ¥X 未平」永远以内部值为准。
+ *
+ * ★ 已知副作用（可接受）：极少数带角分的金额（如 200.50）会显示成 201。
+ *   此时同一行「总买入 + 盈亏」看起来可能差 1 元，属四舍五入的必然结果，
+ *   真实数据一字未改。
+ */
+function fmtYuan(cents) {
+  if (!Number.isFinite(cents)) return '?';
+  const neg = cents < 0;
+  const v = Math.round(Math.abs(cents) / 100);
+  return (neg ? '-' : '') + v;
+}
+
+/** 带符号的整元显示，用于净盈亏列 */
+function fmtSignedYuan(cents) {
+  if (cents === 0) return '0';
+  return (cents > 0 ? '+' : '') + fmtYuan(cents);
+}
+
+/** 紧凑显示：省略无意义的小数零，用于统计卡 */
+function fmtCompact(cents) {
+  const abs = Math.abs(cents);
+  const sign = cents < 0 ? '-' : '';
+  if (abs === 0) return '0';
+  if (abs % 100 === 0) return sign + Math.floor(abs / 100);
+  return sign + fmtCents(abs);
+}
+
+const todayStr = () => {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
+
+const esc = s => String(s).replace(/[&<>"']/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+/* ============================================================
+   数据层
+   ============================================================ */
+let db = load();
+let currentId = db.currentId;
+let rows = [];        // 牌局录入中的临时行
+let editGameId = null;
+
+function blankLedger(name) {
+  const now = new Date().toISOString();
+  return { id: uid(), name, players: [], games: [], createdAt: now, updatedAt: now };
+}
+
+function load() {
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (!raw) throw new Error('empty');
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.ledgers) || parsed.ledgers.length === 0) {
+      throw new Error('bad shape');
+    }
+    // 补齐可能缺失的字段，兼容早期版本
+    parsed.ledgers.forEach(l => {
+      l.players = Array.isArray(l.players) ? l.players : [];
+      l.games = Array.isArray(l.games) ? l.games : [];
+    });
+    if (!parsed.ledgers.some(l => l.id === parsed.currentId)) {
+      parsed.currentId = parsed.ledgers[0].id;
+    }
+    return parsed;
+  } catch (e) {
+    const first = blankLedger('默认账本');
+    return { version: 1, currentId: first.id, ledgers: [first] };
+  }
+}
+
+/** UI 临时状态（牌局展开/收起）不写入存储，这里剥离掉 */
+function serializable(state) {
+  return {
+    ...state,
+    ledgers: state.ledgers.map(l => ({
+      ...l,
+      games: l.games.map(({ _open, ...g }) => g),
+    })),
+  };
+}
+
+function save() {
+  try {
+    localStorage.setItem(KEY, JSON.stringify(serializable(db)));
+  } catch (e) {
+    toast('保存失败：浏览器存储空间可能已满');
+  }
+}
+
+const ledger = () => db.ledgers.find(l => l.id === currentId);
+
+function touchLedger() {
+  const l = ledger();
+  if (l) l.updatedAt = new Date().toISOString();
+  save();
+}
+
+/* ============================================================
+   计算
+   ============================================================ */
+
+/**
+ * 归一化一条牌局明细，兼容旧数据。
+ *
+ * 金额语义（全部为整数分）：
+ *   buys     买入明细（每笔本金，按发生顺序）。**唯一事实来源。**
+ *            第 1 笔就是上桌带的钱，后面每笔都是追加，性质完全一样。
+ *   totalBuy 总买入 = buys 各项之和（派生）
+ *   balance  结余（离桌时手里剩的钱）
+ *   净盈亏    = 结余 − 总买入
+ *
+ * 买入之所以不影响盈亏，是因为它同时抬高总买入与结余：
+ *   盈亏 = (结余+n) − (总买入+n) = 结余 − 总买入
+ *
+ * 数据迁移（旧 → 新）：
+ *   ① 更早的 `buyIn: 300` + `rebuys: [200,100]`
+ *      → `buys: [300,200,100]`（起始买入变成第 1 笔）
+ *   ② 更早的 `rebuy: 150` 标量（只有总额，看不出几笔）
+ *      → 追加成一笔 `[..., 150]`，总额不变、盈亏不变
+ *   ③ 什么都没有 → `[]`
+ */
+function normalizeEntry(e) {
+  const balance = Number(e.balance) || 0;
+
+  let buys;
+  if (Array.isArray(e.buys)) {
+    // 已经是新格式
+    buys = e.buys.map(Number).filter(n => Number.isFinite(n) && n > 0);
+  } else {
+    buys = [];
+    // ① 旧的起始买入 → 第 1 笔
+    const legacyBuyIn = Number(e.buyIn) || 0;
+    if (legacyBuyIn > 0) buys.push(legacyBuyIn);
+    // ② 旧的追加明细 / 标量
+    if (Array.isArray(e.rebuys)) {
+      buys.push(...e.rebuys.map(Number).filter(n => Number.isFinite(n) && n > 0));
+    } else {
+      const legacyRebuy = Number(e.rebuy) || 0;
+      if (legacyRebuy > 0) buys.push(legacyRebuy);
+    }
+  }
+
+  const totalBuy = buys.reduce((a, b) => a + b, 0);
+  return {
+    playerId: e.playerId,
+    playerName: e.playerName,
+    buys,
+    totalBuy,
+    balance,
+    netProfit: balance - totalBuy,
+  };
+}
+
+/** 取一场牌局归一化后的明细 */
+function entriesOf(g) {
+  return (g.entries || []).map(normalizeEntry);
+}
+
+function gameStats(g) {
+  let win = 0, loss = 0;
+  for (const e of entriesOf(g)) {
+    if (e.netProfit > 0) win += e.netProfit;
+    else if (e.netProfit < 0) loss += -e.netProfit;
+  }
+  return { win, loss, flow: win, diff: win - loss, balanced: win === loss };
+}
+
+function sortedGames() {
+  const l = ledger();
+  if (!l) return [];
+  return [...l.games].sort((a, b) =>
+    b.date.localeCompare(a.date) || (b.createdAt || '').localeCompare(a.createdAt || ''));
+}
+
+function leaderboard() {
+  const l = ledger();
+  if (!l) return [];
+  const empty = () => ({ net: 0, win: 0, loss: 0, count: 0, totalBuy: 0 });
+  const map = new Map();
+  for (const p of l.players) {
+    map.set(p.id, { id: p.id, name: p.name, ...empty() });
+  }
+  // 历史牌局里可能有已删除的人员，按牌局内快照补进来
+  for (const g of l.games) {
+    for (const e of entriesOf(g)) {
+      if (!map.has(e.playerId)) {
+        map.set(e.playerId, { id: e.playerId, name: e.playerName, ...empty() });
+      }
+      const row = map.get(e.playerId);
+      row.net += e.netProfit;
+      row.totalBuy += e.totalBuy;
+      if (e.netProfit > 0) row.win += e.netProfit;
+      else if (e.netProfit < 0) row.loss += -e.netProfit;
+      row.count += 1;
+    }
+  }
+  return [...map.values()]
+    .filter(r => r.count > 0 || l.players.some(p => p.id === r.id))
+    .sort((a, b) => b.net - a.net || a.name.localeCompare(b.name, 'zh-CN'));
+}
+
+function totals() {
+  const l = ledger();
+  if (!l) return { games: 0, totalBuy: 0, people: 0, latestFlow: 0, latestBalanced: true };
+  let totalBuy = 0;
+  for (const g of l.games) {
+    for (const e of entriesOf(g)) totalBuy += e.totalBuy;
+  }
+  const gs = sortedGames();
+  const latest = gs.length ? gameStats(gs[0]) : null;
+  return {
+    games: l.games.length,
+    totalBuy,
+    people: l.players.length,
+    latestFlow: latest ? latest.flow : 0,
+    latestBalanced: latest ? latest.balanced : true
+  };
+}
+
+/* ============================================================
+   渲染
+   ============================================================ */
+function render() {
+  renderLedgerSelect();
+  renderStats();
+  renderRank();
+  renderGames();
+  const l = ledger();
+  document.getElementById('btnAddGame').disabled = !l || l.players.length === 0;
+}
+
+function renderLedgerSelect() {
+  const sel = document.getElementById('ledgerSelect');
+  sel.innerHTML = db.ledgers.map(l => {
+    const n = ` (${l.games.length}场)`;
+    return `<option value="${l.id}"${l.id === currentId ? ' selected' : ''}>${esc(l.name + n)}</option>`;
+  }).join('');
+}
+
+function renderStats() {
+  const t = totals();
+  const box = document.getElementById('stats');
+  const latestText = t.games === 0 ? '—'
+    : (t.latestBalanced
+        ? `¥${fmtCompact(t.latestFlow)}`
+        : '未平');
+
+  box.innerHTML = `
+    <div class="stats-grid">
+      <div class="stat">
+        <div class="stat-label">总场次</div>
+        <div class="stat-value">${t.games}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">人员</div>
+        <div class="stat-value">${t.people}</div>
+      </div>
+      <div class="stat">
+        <div class="stat-label">最近一场流水</div>
+        <div class="stat-value${t.games === 0 ? '' : ' sm'}"
+             ${t.games > 0 && !t.latestBalanced ? 'style="color:var(--win)"' : ''}>${latestText}</div>
+      </div>
+    </div>` + renderChart();
+}
+
+/** 最近 12 场流水柱状图 */
+function renderChart() {
+  const gs = sortedGames().slice(0, 12).reverse();
+  if (gs.length < 2) {
+    return `<div class="chart-empty">再记一场就能看到流水走势</div>`;
+  }
+  const flows = gs.map(g => gameStats(g).flow);
+  const max = Math.max(...flows, 1);
+  // 最高的一根只占容器的 88%：这样即使是并列最高，也能看出是「柱子」
+  // 而不是三条贴顶的实心块（贴顶后会像骨架屏）。
+  const bars = flows.map(f =>
+    `<div class="chart-bar" style="height:${Math.max(4, Math.round(f / max * 35))}px"
+          title="¥${fmtCents(f)}"></div>`).join('');
+  return `<div class="chart">${bars}</div>`;
+}
+
+function renderRank() {
+  const list = leaderboard();
+  const box = document.getElementById('rankList');
+  document.getElementById('rankCount').textContent = list.length ? `${list.length} 人` : '';
+
+  if (list.length === 0) {
+    box.innerHTML = `<div class="empty">
+      <div class="empty-icon">♠</div>
+      <div class="empty-title">还没有排行</div>
+      <div class="empty-desc">先添加人员，再记一场牌局</div>
+    </div>`;
+    return;
+  }
+
+  box.innerHTML = list.map((r, i) => {
+    const color = r.net > 0 ? 'var(--win)' : r.net < 0 ? 'var(--lose)' : 'var(--faint)';
+    const detail = r.count === 0
+      ? '未参与'
+      : `${r.count} 场 · 投入 ¥${fmtCompact(r.totalBuy)}`
+        + ` · 赢 ¥${fmtCompact(r.win)} / 输 ¥${fmtCompact(r.loss)}`;
+    return `<div class="rank-row">
+      <div class="rank-no${i === 0 ? ' top' : ''}">${i + 1}</div>
+      <div style="min-width:0">
+        <div class="rank-name">${esc(r.name)}</div>
+        <div class="rank-meta num">${detail}</div>
+      </div>
+      <div class="rank-net num" style="color:${color}">${fmtSigned(r.net)}</div>
+    </div>`;
+  }).join('');
+}
+
+function renderGames() {  const gs = sortedGames();
+  const box = document.getElementById('gameList');
+  document.getElementById('gameCount').textContent = gs.length ? `${gs.length} 场` : '';
+
+  if (gs.length === 0) {
+    box.innerHTML = `<div class="card"><div class="empty">
+      <div class="empty-icon">♣</div>
+      <div class="empty-title">还没有牌局记录</div>
+      <div class="empty-desc">点击下方「记一场牌局」开始</div>
+    </div></div>`;
+    return;
+  }
+
+  const openSet = new Set(
+    gs.filter(g => g._open).map(g => g.id)
+  );
+
+  box.innerHTML = gs.map(g => {
+    const st = gameStats(g);
+    const es = entriesOf(g);
+    const totalBuy = es.reduce((s, e) => s + e.totalBuy, 0);
+    const isOpen = openSet.has(g.id);
+    return `
+    <div class="card game" data-game="${g.id}">
+      <div class="game-head" data-toggle="${g.id}">
+        <div class="game-left">
+          <span class="game-date num">${esc(g.date)}</span>
+          <span class="chip">${es.length}人</span>
+          ${st.balanced ? '' : '<span class="chip bad">未平</span>'}
+        </div>
+        <div class="game-right">
+          <span class="game-flow">流水<b class="num" style="color:${st.balanced ? 'var(--text)' : 'var(--win)'}">¥${fmtCompact(st.flow)}</b></span>
+          <span class="caret${isOpen ? ' open' : ''}">▼</span>
+        </div>
+      </div>
+      ${isOpen ? `
+      <div class="game-body">
+        <div class="game-toolbar">
+          <!-- 总投入撤了：它 = 各行总买入之和，表格里每一行都有，
+               顶部再来一份纯属重复；「流水」已经能说明规模。 -->
+          <div class="toolbar-actions">
+            <button class="mini-btn" data-edit="${g.id}">编辑</button>
+            <button class="mini-btn danger" data-del="${g.id}">删除</button>
+          </div>
+        </div>
+        <table class="detail">
+          <thead><tr>
+            <th>人员</th>
+            <th class="r">买入</th>
+            <th class="r">总买入</th>
+            <th class="r">结余</th>
+            <th class="r">盈亏</th>
+          </tr></thead>
+          <tbody>
+            ${es.map(e => {
+              const c = e.netProfit > 0 ? 'var(--win)'
+                      : e.netProfit < 0 ? 'var(--lose)' : 'var(--faint)';
+              // 买入列：多笔时显示「合计 · N 笔」，单笔只显示金额
+              const buyDetail = e.buys.length > 1
+                ? `${fmtCompact(e.buys[0])}<span style="color:var(--faint);font-size:11px"> +${e.buys.length - 1} 笔</span>`
+                : (e.buys.length ? fmtCompact(e.buys[0]) : '—');
+              return `<tr>
+                <td>${esc(e.playerName)}</td>
+                <td class="r num" style="color:${e.buys.length ? 'var(--muted)' : 'var(--faint)'}">${buyDetail}</td>
+                <td class="r num" style="font-weight:600">${fmtCompact(e.totalBuy)}</td>
+                <td class="r num">${fmtCompact(e.balance)}</td>
+                <td class="r num cell-net" style="color:${c}">${fmtSignedYuan(e.netProfit)}</td>
+              </tr>`;
+              // ★ v20：同样改整元显示（这张表在手机上也要横向装进 320~430px），
+              //   与行内「总买入 / 盈亏」两列的写法保持一致。
+              //   ⚠️ 只动展示 —— tfoot 的合计仍走 fmtCents，保证「合计数
+              //   永远等于各笔精确值之和」，不会因为舍入对不上账。
+            }).join('')}
+          </tbody>
+        </table>
+        <div class="balance-row num">
+          <span>赢 ¥${fmtCents(st.win)}</span>
+          <span>输 ¥${fmtCents(st.loss)}</span>
+          <span style="color:${st.balanced ? 'var(--lose)' : 'var(--win)'}">
+            ${st.balanced ? '已平衡' : `差 ¥${fmtCents(Math.abs(st.diff))} 未平`}
+          </span>
+        </div>
+      </div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+/* ============================================================
+   牌局录入
+   ============================================================ */
+function openGameSheet(gameId) {
+  const l = ledger();
+  if (!l) return;
+  if (l.players.length === 0) {
+    toast('请先添加人员');
+    openSheet('ovPlayers');
+    return;
+  }
+
+  editGameId = gameId || null;
+  const g = gameId ? l.games.find(x => x.id === gameId) : null;
+
+  document.getElementById('gameSheetTitle').textContent = g ? '编辑牌局' : '记一场牌局';
+  document.getElementById('inDate').value = g ? g.date : todayStr();
+
+  // 本局买入：记在牌局上。旧数据没有这个字段 → 空（= 不自动记买入）。
+  // 注意是「一手」的金额，不是总额；选人时每人记一笔。
+  document.getElementById('inBuyDefault').value =
+    g && g.buyDefault > 0 ? String(g.buyDefault / 100) : '';
+
+  rows = g
+    ? entriesOf(g).map(e => ({
+        playerId: e.playerId,
+        playerName: e.playerName,
+        // ★ 已确认的买入全部进明细，格子留空。
+        //   格子从始至终只表示「准备追加的下一笔」——
+        //   这样编辑旧牌局时，填新金额点 + 就是干净地追加，不会和已有笔打架。
+        buys: e.buys.slice(),
+        _buyText: '',
+        value: e.balance ? String(e.balance / 100) : '',
+        _openBuys: false,
+      }))
+    // ★ 新牌局不预填人员，从 0 行开始。
+    //   原来是把账本里**全部**人员一次铺成行 —— 于是「谁上场」这个决定被 App 替用户做了：
+    //   账本里有 12 个人、今晚只来 5 个，打开面板看到 12 行，得手动删掉 7 行。
+    //   反过来 4 人小圈子时预填挺方便，但「方便」不该以「人多了必须删」为代价。
+    //   现在统一从空表开始，用「+ 选择人员上场」逐个把到场的人加进来。
+    : [];
+
+  // 编辑时把不在当前人员列表里的历史成员补回选项，避免数据丢失
+  renderRows();
+  updateCalc();
+  openSheet('ovGame');
+}
+
+function renderRows() {
+  const l = ledger();
+  const zone = document.getElementById('rowZone');
+
+  // 收集所有可选项：现有人员 + 本表已用到的历史人员
+  const options = [...l.players];
+  for (const r of rows) {
+    if (r.playerId && !options.some(p => p.id === r.playerId)) {
+      options.push({ id: r.playerId, name: r.playerName || '（已删除）' });
+    }
+  }
+
+  // 一行都没有（新牌局刚打开）：给个空态提示。
+  // 表头也不显示 —— 空表格配表头看着像加载失败。
+  if (!rows.length) {
+    zone.innerHTML = `<div class="rows-empty">
+      还没有人上场。<br>点下面的 <b>+ 选择人员上场</b> 把今晚到场的人加进来。
+    </div>`;
+    document.getElementById('btnAddRow').disabled = options.length === 0;
+    updateCalc();
+    return;
+  }
+
+  zone.innerHTML = `
+    <div class="prow-head">
+      <div>人员</div>
+      <div class="r">买入</div>
+      <div class="r">总买入</div>
+      <div class="r">结余</div>
+      <div class="r">盈亏</div>
+      <div></div>
+    </div>
+    <div id="prowList"></div>`;
+
+  const list = document.getElementById('prowList');
+  rows.forEach((r, i) => {
+    const el = document.createElement('div');
+    el.className = 'prow';
+    // ★ 状态划分（只有一处真相，避免打架）：
+    //   格子里显示的第 1 笔  = r._buyText（用户正在编的「上桌带的钱」）
+    //   r.buys               = 追加的笔（第 2 笔起），只增不改
+    //   总买入 = parseCents(_buyText) + sum(buys)
+    const added = r.buys || [];
+    el.innerHTML = `
+      <select data-i="${i}" data-f="player">
+        ${options.map(p => `<option value="${p.id}"${p.id === r.playerId ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}
+      </select>
+      <div class="rbc">
+        <div class="rbc-in">
+          <input type="text" inputmode="decimal" placeholder="0" value="${esc(r._buyText || '')}"
+                 data-i="${i}" data-f="buy"
+                 title="第 1 笔买入（上桌带的钱）。按回车提交并跳到结余；要加筹码就再点回这里填新金额">
+          <button class="rbb" data-i="${i}" data-act="buy" title="追加一笔买入">+</button>
+        </div>
+      </div>
+      <button class="tb" data-tb="${i}" data-i="${i}" ${added.length ? `data-act="buyList"
+              aria-expanded="${r._openBuys ? 'true' : 'false'}"
+              title="查看/撤销买入明细（共 ${added.length} 笔）"` : ''}>
+        <span class="tb-num">—</span>${added.length
+          ? `<span class="tb-badge">${added.length}</span>` : ''}
+      </button>
+      <input type="text" inputmode="decimal" placeholder="0" value="${esc(r.value || '')}"
+             data-i="${i}" data-f="value" title="离桌时的余额。按回车直接跳下一行的买入">
+      <div class="pf" data-pf="${i}">—</div>
+      <button class="del" data-i="${i}" title="移除此行">×</button>
+      ${r._openBuys && added.length ? renderBuyDetail(r, i) : ''}`;
+    list.appendChild(el);
+  });
+
+  document.getElementById('btnAddRow').disabled = rows.length >= options.length;
+  paintProfits();
+}
+
+/** 一行的买入明细：已确认的每一笔都可单独撤销；未确认的输入单独标注 */
+function renderBuyDetail(r, i) {
+  const confirmed = r.buys || [];
+  const items = confirmed.map((amt, k) => `
+    <span class="rbi">
+      ${k + 1}. ¥${fmtCompact(amt)}
+      <button class="rbx" data-i="${i}" data-act="buyDel" data-k="${k}" title="撤销这笔买入">×</button>
+    </span>`).join('');
+
+  // 格子里那一笔（还没点 + 的）：只提示，不提供撤销（它就在格子里，直接改/清空即可）
+  const typed = parseCents(r._buyText === undefined ? '' : r._buyText);
+  const pending = (!Number.isNaN(typed) && typed > 0)
+    ? `<span class="rbi" style="opacity:.7">
+         ${confirmed.length + 1}. ¥${fmtCompact(typed)}
+         <span style="color:var(--faint);font-size:11px">格子里，待点 +</span>
+       </span>`
+    : '';
+
+  return `<div class="rbd">买入明细：${items}${pending}
+    <span class="rbh">撤销某笔时，总买入与结余会同步回落 ¥该笔金额。格子里那一笔直接改数字或清空即可。</span></div>`;
+}
+
+/**
+ * 追加一笔买入：把格子里填的金额记入明细。
+ *
+ * 语义（只有一条，没有分支）：
+ *   格子里填的**永远是「准备追加的下一笔」**。
+ *   点 + → 落进 buys 明细 + 格子清空。
+ *
+ * ★ 为什么不改结余 —— 这里踩过坑，记一笔：
+ *   格子里还没点 + 的数字，已经被 liveTotalBuy 算进「总买入」了
+ *   （为了让用户边填边看到盈亏）。如果点 + 时再给结余 +amt，
+ *   同一个数就被计了两遍：用户明明说「我兜里剩 300」，
+ *   点完 + 结余自己变成 400，盈亏从 +200 跳到 +300 —— 数据被凭空污染。
+ *
+ *   正确做法：格子里的数字对盈亏的影响，**全部**发生在「被计入总买入」这一侧。
+ *   点 + 只是把它从「待定」挪进「已确认」，对结余一个字都不动。
+ *   于是：确认前后 总买入 与 盈亏 都完全不变，只有角标 +1。
+ *
+ *   那「中途加筹码、结余跟着涨」怎么办？—— 用户自己在结余格里改。
+ *   这本来就是他心里的账：他要报的是「我手里现在有多少钱」，
+ *   而不是让 App 替他推算。少一层推断，就少一处对不上的地方。
+ */
+/**
+ * 提交买入格里的那一笔。
+ * @param {number} i 行索引
+ * @param {{jump?: boolean}} opts
+ *   jump=true 表示来自「回车键」—— 提交后焦点跳到**本行结余**，
+ *   让「买入 ⏎ 结余 ⏎ 下一行买入 ⏎ …」一路敲回车就能填完整场。
+ *   点 + 按钮则不带 jump：加筹码的人往往要连加几笔，焦点留在买入框才顺手。
+ */
+function doBuy(i, opts = {}) {
+  const r = rows[i];
+  if (!r) return;
+  const input = document.querySelector(`[data-i="${i}"][data-f="buy"]`);
+  if (!input) return;
+  const jump = !!opts.jump;
+
+  const amt = parseCents(input.value);
+  if (Number.isNaN(amt)) { toast('买入金额格式有误，最多两位小数'); input.focus(); return; }
+  if (amt <= 0) {
+    // 回车 + 空格子 = 这一行不用补买入，安静地跳去填结余（不弹提示打扰节奏）
+    if (jump) {
+      const v = document.querySelector(`[data-i="${i}"][data-f="value"]`);
+      if (v) v.focus();
+      return;
+    }
+    toast('请先填买入金额'); input.focus(); return;
+  }
+
+  r.buys = [...(r.buys || []), amt];
+  r._buyText = '';
+
+  // 结余不动 —— 见上方注释。它只在用户自己输入时变。
+  renderRows();
+  updateCalc();
+  const sel = jump ? `[data-i="${i}"][data-f="value"]` : `[data-i="${i}"][data-f="buy"]`;
+  const fresh = document.querySelector(sel);
+  if (fresh) fresh.focus();
+
+  // 回车是「一路敲下去」的节奏，每行都弹 toast 反而打断 ——
+  // 行内的总买入数字和笔数角标已经在实时变，反馈足够了。
+  // 点 + 的场景保留 toast：那一下点击本身没有别的视觉反馈。
+  if (!jump) {
+    const newTotal = (r.buys || []).reduce((a, b) => a + b, 0);
+    toast(`已记入第 ${r.buys.length} 笔买入 ¥${fmtCompact(amt)}，总买入 ¥${fmtCompact(newTotal)}，盈亏不变`);
+  }
+}
+
+/** 撤销一笔买入：总额与结余都不需要回滚（结余从未因它变过） */
+function undoBuy(i, k) {
+  const r = rows[i];
+  if (!r || !r.buys || r.buys[k] === undefined) return;
+  const amt = r.buys[k];
+  r.buys = r.buys.filter((_, idx) => idx !== k);
+
+  renderRows();
+  updateCalc();
+  toast(`已撤销一笔买入 ¥${fmtCompact(amt)}，盈亏不变`);
+}
+
+/**
+ * 实时总买入 = 明细合计 + 格子里正在填的那一笔（还没点 + 的）。
+ * 把格里的一起算上，是为了让用户边打边看到结果。
+ *
+ * ★ 这也是「点 + 不改结余」的原因：格里的数字在点 + 之前就已经
+ *   显示在总买入里了，点 + 只是换个归属地，不能让盈亏再跳一次。
+ */
+function liveTotalBuy(r) {
+  const rest = (r.buys || []).reduce((a, b) => a + b, 0);
+  const typed = parseCents(r._buyText === undefined ? '' : r._buyText);
+  if (Number.isNaN(typed)) return NaN;
+  return rest + (typed > 0 ? typed : 0);
+}
+
+function paintProfits() {
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const totalBuy = liveTotalBuy(r);
+    const val = parseCents(r.value);
+    const rawText = r._buyText === undefined ? '' : r._buyText;
+
+    // 总买入列。
+    // ★ 它同时是买入明细的入口（点它展开/收起每一笔），所以不能整个 textContent 覆盖 ——
+    //   里面还有笔数角标和箭头两个子元素。只更新 .tb-num，再同步角标与可点性。
+    const tbCell = document.querySelector(`[data-tb="${i}"]`);
+    if (tbCell) {
+      const numEl = tbCell.querySelector('.tb-num');
+      let txt;
+      if (Number.isNaN(totalBuy)) {
+        txt = '?';
+      } else if (totalBuy === 0 && String(rawText).trim() === '') {
+        txt = '—';
+      } else {
+        // 不带 ¥：表头已标明「总买入」，且全站都是元，省下的宽度留给数字。
+        // ★ 走 fmtYuan 整元显示：省下的约 21px 全部让给买入输入框（见 v19 根因）。
+        txt = fmtYuan(totalBuy);
+      }
+      if (numEl) numEl.textContent = txt; else tbCell.textContent = txt;
+
+      // 笔数角标只在「已确认的笔」> 0 时出现。格子里那笔还没点 + 的不算 ——
+      // 它还没进 buys，此刻算「还没记」。
+      // 角标是绝对定位叠在右上角的，不占横向空间，所以这里只管它的存在与内容，
+      // 不需要为它腾位置（总买入列在窄屏只有 58px，并排会把数字挤掉）。
+      const n = (r.buys || []).length;
+      let badge = tbCell.querySelector('.tb-badge');
+      if (n > 0) {
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'tb-badge';
+          tbCell.appendChild(badge);
+        }
+        badge.textContent = String(n);
+        // 有明细才可点：挂上 data-act 与 aria-expanded，CSS 靠 aria 驱动展开态样式
+        tbCell.dataset.act = 'buyList';
+        tbCell.setAttribute('aria-expanded', r._openBuys ? 'true' : 'false');
+        tbCell.title = `查看/撤销买入明细（共 ${n} 笔）`;
+      } else {
+        // 没记过买入 → 不可点，入口整个撤掉（免得点了没反应）
+        if (badge) badge.remove();
+        delete tbCell.dataset.act;
+        tbCell.removeAttribute('aria-expanded');
+        tbCell.removeAttribute('title');
+      }
+    }
+
+    const cell = document.querySelector(`[data-pf="${i}"]`);
+    if (!cell) continue;
+
+    const hasBuy = totalBuy > 0 || String(rawText).trim() !== '';
+    const hasBalance = String(r.value === undefined || r.value === null ? '' : r.value).trim() !== '';
+
+    // ★ 结余没填：只有「买入」在，算不出盈亏。
+    //   以前这里会把空的结余当成 0，于是「刚上桌、本金 200、还没离桌」显示 −200，
+    //   看着像一坐下就输光 —— 其实只是结果未知。现在显示「未结算」并置灰。
+    if (!hasBalance) {
+      cell.className = 'pf pending';
+      cell.textContent = hasBuy ? '未结算' : '—';
+      continue;
+    }
+
+    if (Number.isNaN(totalBuy) || Number.isNaN(val)) {
+      cell.className = 'pf';
+      cell.textContent = '?';
+      continue;
+    }
+    const profit = val - totalBuy;
+    cell.className = 'pf' + (profit > 0 ? ' up' : profit < 0 ? ' down' : '');
+    // ★ 同总买入：盈亏列也走整元，把宽度还给买入框（窄屏六列，每一 px 都要抢）。
+    cell.textContent = fmtSignedYuan(profit);
+  }
+}
+
+/** 从当前行计算净盈亏与零和状态 */
+function computeEntries() {
+  const out = [];
+  for (const r of rows) {
+    // 明细 = 已确认的笔（buys） + 格子里还没点 + 的那一笔（_buyText）
+    const rest = (r.buys || []).filter(n => Number.isFinite(n) && n > 0);
+    const typedText = r._buyText === undefined ? '' : r._buyText;
+    const typed = parseCents(typedText);
+    const typedOk = Number.isNaN(typed)
+      ? (String(typedText).trim() === '' ? 0 : NaN)
+      : typed;
+    const val = parseCents(r.value);
+
+    if (Number.isNaN(typedOk) || Number.isNaN(val)) {
+      return { error: '金额格式有误，最多保留两位小数' };
+    }
+
+    const buys = (typedOk > 0 ? [typedOk] : []).concat(rest);
+    const totalBuy = buys.reduce((a, b) => a + b, 0);
+
+    // ★ 结余格是不是真的填过？
+    //   加了「本局买入自动记一笔」之后，新人一上场就带着 200 买入、
+    //   而结余还是空的 —— 按 盈亏 = 结余 − 总买入 会立刻显示 −200，
+    //   看着像「刚坐下就输了 200」。其实只是还没离桌、结果未知。
+    //   所以在结余没填之前，这行的盈亏标成「未结算」，不计入输赢统计。
+    const settled = String(r.value === undefined || r.value === null ? '' : r.value).trim() !== '';
+
+    out.push({
+      playerId: r.playerId,
+      playerName: r.playerName,
+      buys,
+      totalBuy,
+      balance: val,
+      netProfit: val - totalBuy,
+      settled,               // false = 已买入但结余未填，结果未知
+    });
+  }
+  return { entries: out };
+}
+
+function updateCalc() {
+  const box = document.getElementById('calcHint');
+  const res = computeEntries();
+
+  if (res.error) {
+    box.className = 'calc-hint bad';
+    box.innerHTML = `<span>${esc(res.error)}</span>`;
+    return false;
+  }
+  if (res.entries.length === 0) {
+    box.className = 'calc-hint';
+    // 措辞：账本里有人员 ≠ 有人上场。新牌局从 0 行开始，这里说的是「场上」没人
+    box.innerHTML = `<span>${ledger().players.length ? '还没有人上场' : '还没有人员'}</span>`;
+    return true;
+  }
+
+  let win = 0, loss = 0, totalBuy = 0, pending = 0;
+  for (const e of res.entries) {
+    totalBuy += e.totalBuy;
+    // ★ 结余没填的行（未结算）不参与输赢统计 ——
+    //   它的 netProfit 只是「−本金」，不是真结果，算进去会凭空造出亏损。
+    if (!e.settled) { pending++; continue; }
+    if (e.netProfit > 0) win += e.netProfit;
+    else if (e.netProfit < 0) loss += -e.netProfit;
+  }
+  const balanced = win === loss;
+
+  // 区分两种情况：
+  // - 账目不平：数据本身合法，只是还没输完/算错，允许保存但用橙色提醒
+  // - 格式错误：已在上面 return，属阻断性问题，用红色
+  box.className = 'calc-hint' + (balanced ? '' : ' warn');
+
+  // 未平衡时把「赢」「输」两侧的原值都摆出来，而不是只给一个孤立的差额。
+  // 单独一个「差额 ¥300」不告诉你差在哪 —— 赢家赢多了还是输家输多了，
+  // 得自己在脑子里对两个数。把基数摊开，方向与差距同时可见。
+  //
+  // 平衡时保持原样（只有一个「流水」总额，没有两侧可分）。
+  const flow = balanced
+    ? `<span class="num">已平衡 · 流水 ¥${fmtCents(win)}</span>`
+    : `<span class="num">赢 ¥${fmtCents(win)}</span>
+       <span class="num">输 ¥${fmtCents(loss)}</span>
+       <span class="num sum-gap">差 ¥${fmtCents(Math.abs(win - loss))} 未平</span>`;
+
+  const pendingTip = pending
+    ? `<span class="pending-tip">${pending} 人未结算</span>`
+    : '';
+
+  box.innerHTML = `
+    ${flow}
+    ${pendingTip}`;
+  return true;
+}
+
+function saveGame() {
+  const l = ledger();
+  const res = computeEntries();
+  if (res.error) { toast(res.error); return; }
+  if (res.entries.length === 0) { toast('请至少添加一位人员'); return; }
+
+  // 同一场里不能有重复人员
+  const ids = res.entries.map(e => e.playerId);
+  if (new Set(ids).size !== ids.length) { toast('同一场牌局里不能有重复人员'); return; }
+  if (ids.includes('')) { toast('请为每一行选择人员'); return; }
+
+  // 补上姓名快照，并只落盘必要字段（totalBuy/netProfit 都是派生值，不入库）
+  const stored = res.entries.map(e => ({
+    playerId: e.playerId,
+    playerName: (() => {
+      const p = l.players.find(x => x.id === e.playerId);
+      return p ? p.name : e.playerName;
+    })(),
+    buys: e.buys,           // 买入明细，唯一事实来源
+    balance: e.balance,
+  }));
+
+  const date = document.getElementById('inDate').value || todayStr();
+
+  // 本局买入（一手金额），整数分。留空 / 填 0 → 存 0（等价于不自动记买入）。
+  const rawDefault = parseCents(document.getElementById('inBuyDefault').value);
+  const buyDefault = Number.isFinite(rawDefault) && rawDefault > 0 ? rawDefault : 0;
+
+  if (editGameId) {
+    const g = l.games.find(x => x.id === editGameId);
+    if (g) {
+      g.date = date;
+      g.buyDefault = buyDefault;
+      g.entries = stored;
+      g.updatedAt = new Date().toISOString();
+    }
+    toast('已更新');
+  } else {
+    l.games.push({
+      id: uid(),
+      date,
+      buyDefault,
+      entries: stored,
+      createdAt: new Date().toISOString(),
+      _open: true,
+    });
+    toast('已保存');
+  }
+
+  editGameId = null;
+  rows = [];
+  touchLedger();
+
+  // ★ 保存后把「牌局记录」展开并定位过去。
+  //   它默认是收起的 —— 刚记完一场却看不到自己刚记的东西，
+  //   会让人怀疑「到底存上了没有」。记完就该看得见。
+  openSection('secGames', 'headGames');
+  closeSheet('ovGame');
+  render();
+}
+
+/* ============================================================
+   人员管理
+   ============================================================ */
+function renderPlayers() {
+  const l = ledger();
+  const box = document.getElementById('plist');
+  if (!l.players.length) {
+    box.innerHTML = `<div style="font-size:13px;color:var(--muted);margin-bottom:12px">还没有人员</div>`;
+    return;
+  }
+  box.innerHTML = l.players.map(p =>
+    `<span class="ptag">${esc(p.name)}<button class="x" data-rmp="${p.id}" title="删除">×</button></span>`
+  ).join('');
+}
+
+/**
+ * 新建一个人员。返回新建的 player，失败返回 null。
+ * addPlayer（人员管理）与 addPlayerThenPick（选人面板）共用，避免两套重复校验。
+ */
+function createPlayer(rawName) {
+  const name = String(rawName || '').trim();
+  if (!name) { toast('请输入姓名'); return null; }
+
+  const l = ledger();
+  if (l.players.some(p => p.name === name)) { toast('人员已存在'); return null; }
+
+  const p = { id: uid(), name, createdAt: new Date().toISOString() };
+  l.players.push(p);
+  touchLedger();
+  renderPlayers();   // 人员管理的标签列表要同步（两条新建路径都走这里）
+  return p;
+}
+
+function addPlayer() {
+  const input = document.getElementById('inPlayerName');
+  if (!createPlayer(input.value)) return;
+  input.value = '';
+  renderPlayers();
+  render();
+}
+
+/**
+ * 选人面板里「新建并选中」：建完人直接在列表里勾上，不用再回列表里找一遍。
+ *
+ * 注意是「选中」不是「上场」—— 面板现在是多选模式，
+ * 新建的人只勾上，仍要点「确认上场」才进场（和勾别的人一起）。
+ * 这样新人和老手可以一次确认进场，买入也统一带上。
+ */
+function addPlayerThenPick() {
+  const input = document.getElementById('inNewPlayerName');
+  const p = createPlayer(input.value);
+  if (!p) return;
+  input.value = '';
+  if (!pickSel.includes(p.id)) pickSel = [...pickSel, p.id];
+  renderPickList();
+  toast(`${p.name} 已选中，点「确认上场」进场`);
+}
+
+function removePlayer(id) {
+  const l = ledger();
+  const p = l.players.find(x => x.id === id);
+  if (!p) return;
+
+  const used = l.games.some(g => g.entries.some(e => e.playerId === id));
+  const msg = used
+    ? `删除「${p.name}」？他的历史牌局记录会保留。`
+    : `删除「${p.name}」？`;
+  if (!confirm(msg)) return;
+
+  l.players = l.players.filter(x => x.id !== id);
+  touchLedger();
+  renderPlayers();
+  render();
+  toast('已删除');
+}
+
+/* ============================================================
+   账本管理
+   ============================================================ */
+function renderLedgers() {
+  const box = document.getElementById('llist');
+  box.innerHTML = db.ledgers.map(l => {
+    const people = l.players.length;
+    const d = new Date(l.updatedAt);
+    const p = n => String(n).padStart(2, '0');
+    const meta = `${l.games.length} 场 · ${people} 人 · 更新于 ${d.getMonth() + 1}/${p(d.getDate())}`;
+    return `<div class="litem${l.id === currentId ? ' current' : ''}" data-ledger="${l.id}">
+      <div class="litem-main">
+        <div class="litem-name">${esc(l.name)}</div>
+        <div class="litem-meta num">${meta}</div>
+      </div>
+      ${l.id === currentId ? '<div class="litem-check">✓</div>' : ''}
+    </div>`;
+  }).join('') + (db.ledgers.length > 1 ? `
+    <button class="btn btn-ghost btn-sm btn-block" id="btnDelLedger"
+            style="color:var(--win);margin-top:4px">删除当前账本</button>` : '');
+}
+
+function newLedger() {
+  const name = prompt('新账本名称', `账本 ${db.ledgers.length + 1}`);
+  if (name === null) return;
+  const trimmed = name.trim();
+  if (!trimmed) { toast('名称不能为空'); return; }
+  if (db.ledgers.some(l => l.name === trimmed)) { toast('账本名称重复'); return; }
+
+  const l = blankLedger(trimmed);
+  db.ledgers.push(l);
+  currentId = l.id;
+  save();
+  render();
+  renderLedgers();
+  toast('已创建');
+}
+
+function delLedger() {
+  const l = ledger();
+  if (!l) return;
+  if (db.ledgers.length <= 1) { toast('至少保留一个账本'); return; }
+  if (!confirm(`删除账本「${l.name}」？\n该账本下 ${l.games.length} 场牌局和 ${l.players.length} 位人员会一起删除，且无法恢复。`)) return;
+
+  db.ledgers = db.ledgers.filter(x => x.id !== currentId);
+  currentId = db.ledgers[0].id;
+  save();
+  render();
+  renderLedgers();
+  toast('已删除');
+}
+
+/* ============================================================
+   备份与恢复
+   ============================================================ */
+function exportData() {
+  // 用 serializable 剥离 UI 临时状态，备份文件只含业务数据
+  const payload = JSON.stringify(serializable(db), null, 2);
+  const blob = new Blob([payload], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const p = n => String(n).padStart(2, '0');
+  const d = new Date();
+  a.href = url;
+  a.download = `扑克记分房备份-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast('备份文件已导出');
+}
+
+function importData(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(String(reader.result));
+    } catch (e) {
+      toast('文件格式不对，无法解析');
+      return;
+    }
+    if (!parsed || !Array.isArray(parsed.ledgers) || parsed.ledgers.length === 0) {
+      toast('这不是有效的备份文件');
+      return;
+    }
+    const games = parsed.ledgers.reduce((s, l) => s + (l.games ? l.games.length : 0), 0);
+    if (!confirm(`即将恢复 ${parsed.ledgers.length} 个账本、${games} 场牌局。\n\n当前设备上的全部数据会被覆盖，确定继续？`)) return;
+
+    parsed.ledgers.forEach(l => {
+      l.players = Array.isArray(l.players) ? l.players : [];
+      l.games = Array.isArray(l.games) ? l.games : [];
+    });
+    if (!parsed.ledgers.some(l => l.id === parsed.currentId)) {
+      parsed.currentId = parsed.ledgers[0].id;
+    }
+
+    db = parsed;
+    currentId = db.currentId;
+    save();
+    closeSheet('ovData');
+    render();
+    toast('恢复完成');
+  };
+  reader.onerror = () => toast('读取文件失败');
+  reader.readAsText(file);
+}
+
+function clearGames() {
+  const l = ledger();
+  if (!l || !l.games.length) { toast('当前账本没有牌局记录'); return; }
+  if (!confirm(`清空「${l.name}」下的全部 ${l.games.length} 场牌局记录？\n\n人员会保留，此操作无法撤销。`)) return;
+  l.games = [];
+  touchLedger();
+  closeSheet('ovData');
+  render();
+  toast('已清空');
+}
+
+/* ============================================================
+   弹窗与提示
+   ============================================================ */
+/**
+ * 打开/关闭底部面板。
+ *
+ * ★ 关闭时不能无条件还原 body 的 overflow：
+ *   选人面板是从牌局面板里弹出来的，关掉它时牌局面板还开着 ——
+ *   这时候若解锁滚动，背后的页面会跟着滑，看着像弹窗漏了。
+ *   所以只在「已经没有任何面板开着」时才还原。
+ */
+function openSheet(id) {
+  document.getElementById(id).classList.add('show');
+  document.body.style.overflow = 'hidden';
+}
+function closeSheet(id) {
+  document.getElementById(id).classList.remove('show');
+  if (!document.querySelector('.overlay.show')) document.body.style.overflow = '';
+}
+
+let toastTimer = null;
+function toast(msg) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+}
+
+/* ============================================================
+   事件绑定
+   ============================================================ */
+document.getElementById('btnAddGame').onclick = () => openGameSheet(null);
+document.getElementById('btnSaveGame').onclick = saveGame;
+
+document.getElementById('btnPlayers').onclick = () => {
+  renderPlayers();
+  document.getElementById('inPlayerName').value = '';
+  openSheet('ovPlayers');
+};
+document.getElementById('btnAddPlayer').onclick = addPlayer;
+
+document.getElementById('btnLedgers').onclick = () => { renderLedgers(); openSheet('ovLedgers'); };
+document.getElementById('btnNewLedger').onclick = newLedger;
+
+document.getElementById('btnData').onclick = () => openSheet('ovData');
+
+/* ============================================================
+   分区折叠（排行榜 / 牌局记录）
+   ------------------------------------------------------------
+   默认**收起**，点标题行展开。状态只存在内存里（section 的 .open 类），
+   刷新即回到默认收起 —— 不做持久化。
+
+   ★ 为什么不持久化：这两个区块是「需要时才看」的辅助信息，
+     默认收起是为了让首屏干净。若记住上次展开状态，
+     看一次排行榜之后，以后每次进首页都会被重新撑开，
+     等于失去「默认收起」的意义。
+     （牌局列表内核每个牌局的展开状态 g._open 同理，不落盘。）
+   ============================================================ */
+function toggleSection(secId, headId) {
+  const sec = document.getElementById(secId);
+  const head = document.getElementById(headId);
+  if (!sec || !head) return;
+  const open = !sec.classList.contains('open');
+  setSectionOpen(sec, head, open);
+}
+
+/** 直接设为展开 —— 保存牌局后调用，确保「刚记完的能看见」 */
+function openSection(secId, headId) {
+  const sec = document.getElementById(secId);
+  const head = document.getElementById(headId);
+  if (!sec || !head) return;
+  setSectionOpen(sec, head, true);
+}
+
+function setSectionOpen(sec, head, open) {
+  sec.classList.toggle('open', open);
+  // aria-expanded 同时驱动箭头旋转与「点开」提示的显隐（见 CSS），JS 不再改文案
+  head.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+
+document.getElementById('headRank').onclick = () => toggleSection('secRank', 'headRank');
+document.getElementById('headGames').onclick = () => toggleSection('secGames', 'headGames');
+
+/**
+ * 导出当前账本的逐局流水为 CSV（Excel 可直接打开）。
+ *
+ * ★ 为什么要有它：界面为了省宽度把「总买入 / 盈亏」显示成整元，
+ *   看不到角分。这份导出是**留小数**的完整数据，用来对账，
+ *   也算给「显示整数」这个取舍上的一道保险。
+ *
+ * ★ 数值列一律输出「1234.50」这种不带 ¥ 的裸数字，
+ *   这样 Excel 会识别成数字、能直接求和。
+ * ★ 加 UTF-8 BOM，否则 Excel 打开中文会乱码（老问题）。
+ */
+function exportCsv() {
+  const l = ledger();
+  const q = s => {
+    const v = String(s === null || s === undefined ? '' : s);
+    return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+  };
+  const head = ['日期', '人员', '买入', '总买入', '结余', '净盈亏'];
+  const lines = [head.join(',')];
+  for (const g of l.games) {
+    const entries = entriesOf(g);
+    for (const e of entries) {
+      lines.push([
+        g.date,
+        q(e.playerName),
+        q(fmtCents(e.buys[0] || 0) + (e.buys.length > 1 ? ` +${e.buys.length - 1}笔` : '')),
+        fmtCents(e.totalBuy),
+        fmtCents(e.balance),
+        fmtCents(e.netProfit),
+      ].join(','));
+    }
+  }
+  if (l.games.length === 0) {
+    toast('当前账本还没有牌局记录');
+    return;
+  }
+  const csv = '\uFEFF' + lines.join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const p = n => String(n).padStart(2, '0');
+  const d = new Date();
+  a.href = url;
+  a.download = `${l.name}-牌局明细-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast('Excel 明细已导出（金额保留两位小数）');
+}
+
+document.getElementById('btnExport').onclick = exportData;
+document.getElementById('btnExportCsv').onclick = exportCsv;
+document.getElementById('btnImport').onclick = () => document.getElementById('fileImport').click();
+document.getElementById('fileImport').onchange = e => {
+  const f = e.target.files && e.target.files[0];
+  if (f) importData(f);
+  e.target.value = '';
+};
+document.getElementById('btnClearGames').onclick = clearGames;
+
+document.getElementById('ledgerSelect').onchange = e => {
+  currentId = e.target.value;
+  save();
+  render();
+};
+
+// 关闭按钮
+document.addEventListener('click', e => {
+  const c = e.target.closest('[data-close]');
+  if (c) closeSheet(c.dataset.close);
+});
+// 点击遮罩关闭
+document.querySelectorAll('.overlay').forEach(ov => {
+  ov.addEventListener('click', e => { if (e.target === ov) closeSheet(ov.id); });
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.overlay.show').forEach(ov => closeSheet(ov.id));
+  }
+});
+
+// 账本切换
+document.getElementById('llist').addEventListener('click', e => {
+  if (e.target.id === 'btnDelLedger') { delLedger(); return; }
+  const item = e.target.closest('[data-ledger]');
+  if (item) {
+    currentId = item.dataset.ledger;
+    save();
+    render();
+    renderLedgers();
+    closeSheet('ovLedgers');
+  }
+});
+
+// 人员删除
+document.getElementById('plist').addEventListener('click', e => {
+  const btn = e.target.closest('[data-rmp]');
+  if (btn) removePlayer(btn.dataset.rmp);
+});
+
+// 选人上场：点一行切换「选中」状态（多选），点底部的「确认上场」才一起进场。
+// 不再是一点就加 —— 一桌 6 个人得开关面板 6 次，而且点错了没法撤（除非再加完再删行）。
+document.getElementById('pickList').addEventListener('click', e => {
+  const btn = e.target.closest('[data-pick]');
+  if (!btn || !btn.dataset.pick) return;
+  const id = btn.dataset.pick;
+  pickSel = pickSel.includes(id)
+    ? pickSel.filter(x => x !== id)      // 再点一次取消选中
+    : [...pickSel, id];                  // 追加到末尾 → 表格行序 = 点选顺序
+  renderPickList();
+});
+
+document.getElementById('btnConfirmPick').onclick = confirmPick;
+
+// 选人面板里「新建并选中」：建完人直接勾上，省一次点击（仍要点「确认上场」才进场）
+document.getElementById('btnAddPlayerThenPick').onclick = addPlayerThenPick;
+
+// 牌局列表：展开 / 编辑 / 删除
+document.getElementById('gameList').addEventListener('click', e => {
+  const del = e.target.closest('[data-del]');
+  if (del) {
+    const g = ledger().games.find(x => x.id === del.dataset.del);
+    if (g && confirm(`删除 ${g.date} 这场牌局？\n\n此操作无法撤销。`)) {
+      const l = ledger();
+      l.games = l.games.filter(x => x.id !== del.dataset.del);
+      touchLedger();
+      render();
+      toast('已删除');
+    }
+    return;
+  }
+  const ed = e.target.closest('[data-edit]');
+  if (ed) { openGameSheet(ed.dataset.edit); return; }
+
+  const tg = e.target.closest('[data-toggle]');
+  if (tg) {
+    const g = ledger().games.find(x => x.id === tg.dataset.toggle);
+    if (g) g._open = !g._open;
+    renderGames();
+  }
+});
+
+// 录入行：选择人员 / 填买入 / 填结余 / 删除行
+// 「买入」格只记第 1 笔（暂存在 _buyText），回车或点 + 才追加成明细
+const NUMERIC_FIELDS = ['buy', 'value'];
+
+document.getElementById('rowZone').addEventListener('input', e => {
+  const i = e.target.dataset.i;
+  if (i === undefined) return;
+  const f = e.target.dataset.f;
+  if (NUMERIC_FIELDS.includes(f)) {
+    if (f === 'buy') {
+      // 格子里的是第 1 笔，先记在 _buyText 上（还没提交），实时参与总买入计算
+      rows[+i]._buyText = e.target.value;
+    } else {
+      rows[+i][f] = e.target.value;
+    }
+    paintProfits();   // 逐字符刷新该行盈亏，不动 DOM 结构（避免失焦）
+    updateCalc();
+  }
+});
+
+// ★ 回车键串起整条填写链（这是「填写不流畅」的主治药）：
+//   买入框 ⏎ → 提交这笔，焦点跳本行「结余」
+//   结余框 ⏎ → 焦点跳下一行「买入」；已经是最后一行就收起键盘（填完了）
+//   这样 6 个人就是 200⏎385⏎200⏎400⏎… 一路敲到底，不用在每个格子之间找位置点。
+document.getElementById('rowZone').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const f = e.target.dataset && e.target.dataset.f;
+  const i = e.target.dataset && e.target.dataset.i;
+  if (i === undefined) return;
+  if (f === 'buy') {
+    e.preventDefault();
+    doBuy(+i, { jump: true });
+    return;
+  }
+  if (f === 'value') {
+    e.preventDefault();
+    const nxt = document.querySelector(`[data-i="${+i + 1}"][data-f="buy"]`);
+    if (nxt) { nxt.focus(); }
+    else { e.target.blur(); }   // 最后一行：收起键盘，暗示「可以保存了」
+  }
+});
+
+document.getElementById('rowZone').addEventListener('change', e => {
+  const i = e.target.dataset.i;
+  if (i === undefined || e.target.dataset.f !== 'player') return;
+  const idx = +i;
+  rows[idx].playerId = e.target.value;
+  const opt = e.target.selectedOptions[0];
+  if (opt) rows[idx].playerName = opt.textContent;
+});
+
+document.getElementById('rowZone').addEventListener('click', e => {
+  const act = e.target.closest('[data-act]');
+  if (act) {
+    const i = +act.dataset.i;
+    // 面板可能已关闭（保存后面板收起，残留的点击不该报错）
+    if (!rows[i]) return;
+    if (act.dataset.act === 'buy') { doBuy(i); return; }
+    if (act.dataset.act === 'buyDel') { undoBuy(i, +act.dataset.k); return; }
+    if (act.dataset.act === 'buyList') {
+      rows[i]._openBuys = !rows[i]._openBuys;
+      renderRows();
+      updateCalc();
+      return;
+    }
+  }
+  const btn = e.target.closest('.del');
+  if (!btn || !rows[+btn.dataset.i]) return;
+  rows.splice(+btn.dataset.i, 1);
+  renderRows();
+  updateCalc();
+});
+
+/**
+ * 点「+ 选择人员上场」→ 打开选人面板（多选），由用户自己挑。
+ *
+ * 之前是直接 `players.find(p => !used.has(p.id))` —— 自动抓第一个没上场的人塞进表格。
+ * 问题在于「加谁」是用户的决定，App 不该替他猜：多人账本里谁是下一个上场的人，
+ * 只有用户知道。自动抓人还会让人以为「点一下就是加名单里的第一个人」。
+ *
+ * 现在是多选：点行切换选中态，点「确认上场」才一起进场。
+ * 一桌 6 个人不用点 6 次开关面板 6 次。
+ */
+let pickSel = [];   // 面板里已勾选的人员 id，按点选顺序（决定表格行序）
+
+document.getElementById('btnAddRow').onclick = () => {
+  pickSel = [];                       // 每次都从干净状态开始
+  renderPickList();
+  document.getElementById('inNewPlayerName').value = '';
+  openSheet('ovPickPlayer');
+};
+
+/** 取「本局买入」当前值（整数分）。留空 / 非法 / 非正 → 0（不自动记） */
+function buyDefaultCents() {
+  const el = document.getElementById('inBuyDefault');
+  if (!el) return 0;
+  const n = parseCents(el.value);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * 渲染选人列表（多选）。
+ * - 可选的人：点击切换选中态
+ * - 已在场上的人：置灰、排后面、标「已上场」
+ */
+function renderPickList() {
+  const l = ledger();
+  const box = document.getElementById('pickList');
+  const used = new Set(rows.map(r => r.playerId));
+
+  if (!l.players.length) {
+    box.innerHTML = `<div style="font-size:13px;color:var(--muted)">
+      这个账本还没有人员，用下面的输入框先建一个。</div>`;
+    syncPickFoot();
+    return;
+  }
+
+  const avail = l.players.filter(p => !used.has(p.id));
+  const onTable = l.players.filter(p => used.has(p.id));
+
+  // ★ 全员已在场上：**仍然把名单渲染出来**（全部置灰），只在上面加一行说明。
+  //   原来这里直接 return 只显示一句「全部都在场上」——
+  //   于是「谁在场上」这个信息反而看不到，用户想核对名单就没辙了。
+  const emptyMsg = !avail.length
+    ? `<div style="font-size:13px;color:var(--muted);margin-bottom:10px">
+         全部 ${l.players.length} 位人员都已在场上。</div>`
+    : '';
+
+  // 已上场的排在后面且置灰：保留位置感，同时明确「不是漏了这个人」
+  box.innerHTML = emptyMsg + [...avail, ...onTable].map(p => {
+    const on = used.has(p.id);
+    const sel = pickSel.includes(p.id);
+    return `<button class="pick${sel ? ' on' : ''}" ${on ? 'disabled' : ''}
+                    data-pick="${on ? '' : p.id}">
+      <span class="pick-left">
+        <span class="pick-box">${sel ? '✓' : ''}</span>
+        <span>${esc(p.name)}</span>
+      </span>
+      ${on ? '<span class="pick-hint">已上场</span>' : ''}
+    </button>`;
+  }).join('');
+
+  syncPickFoot();
+}
+
+/** 同步底部的「确认上场（N）」按钮：文案带上人数与本局买入总额，禁用态跟随选中数 */
+function syncPickFoot() {
+  const btn = document.getElementById('btnConfirmPick');
+  if (!btn) return;
+  const n = pickSel.length;
+  const per = buyDefaultCents();
+  if (!n) {
+    btn.disabled = true;
+    btn.textContent = '确认上场';
+    return;
+  }
+  btn.disabled = false;
+  btn.textContent = per > 0
+    ? `确认上场 ${n} 人 · 各记 ¥${fmtCents(per)}`
+    : `确认上场 ${n} 人`;
+}
+
+/**
+ * 确认上场：把勾选的人按点选顺序加进表格，并各自动记一笔「本局买入」。
+ *
+ * ★ 为什么自动记第一笔：一桌人上桌时买入通常一样（每局买入 = 一手）。
+ *   逐个填 6 遍同样的数字纯属重复劳动，而且容易漏填导致总买入不对。
+ *   这里把它变成「设一次本局买入 → 选人 → 自动带出」。
+ *
+ * ★ 留空本局买入（=0）就完全不自动记 —— 不给用户塞一笔他没要求的数据。
+ */
+function confirmPick() {
+  const l = ledger();
+  const picked = pickSel
+    .map(id => l.players.find(p => p.id === id))
+    .filter(Boolean);
+  if (!picked.length) return;
+
+  const per = buyDefaultCents();
+  let added = 0;
+  for (const p of picked) {
+    if (addRowFor(p, per)) added++;
+  }
+
+  if (!added) { toast('这些人都已在场上'); return; }
+  pickSel = [];
+  closeSheet('ovPickPlayer');
+  toast(per > 0
+    ? `${added} 人已上场，各记买入 ¥${fmtCents(per)}`
+    : `${added} 人已上场`);
+}
+
+/**
+ * 把某人加进当前牌局的一行（人员管理 / 选人面板都会走到这里）。
+ * @param {object} player
+ * @param {number} firstBuy 首笔买入（整数分），>0 时自动记进明细；0 则不记。
+ * @returns {boolean} 是否真的加进去了（重复上场返回 false）
+ */
+function addRowFor(player, firstBuy = 0) {
+  const used = new Set(rows.map(r => r.playerId));
+  if (used.has(player.id)) { toast(`${player.name} 已在场上`); return false; }
+
+  const buy = Number.isFinite(firstBuy) && firstBuy > 0 ? firstBuy : 0;
+  rows.push({
+    playerId: player.id, playerName: player.name,
+    _buyText: '',
+    // ★ 自动记的那一笔进明细（buys），格子留空 ——
+    //   格子永远只表示「准备追加的下一笔」，语义不变。
+    buys: buy > 0 ? [buy] : [],
+    value: '', _openBuys: false,
+  });
+  renderRows();
+  updateCalc();
+  return true;
+}
+
+/* ============================================================
+   启动
+   ============================================================ */
+render();
+
+/* ============================================================
+   防缩放兜底
+   ------------------------------------------------------------
+   viewport 里的 user-scalable=no / maximum-scale=1 在 Android 上够用，
+   但 iOS Safari 从 10 起为无障碍考虑**故意忽略**它。所以这里再补两层：
+     1) 双指捏合 → 拦掉 gesturestart / gesturechange（iOS 专有事件）
+     2) 双击放大 → 拦掉 300ms 内的第二次 touchend
+   另外 16px 输入框（见 CSS）是为了挡住 iOS 的「聚焦强制放大整页」。
+   ============================================================ */
+(function blockZoom() {
+  // 双指捏合（iOS Safari 专有）
+  ['gesturestart', 'gesturechange', 'gestureend'].forEach(ev => {
+    document.addEventListener(ev, e => e.preventDefault(), { passive: false });
+  });
+
+  // 双击放大：记录上次 touchend 时间，300ms 内再来一次就拦掉
+  let lastTouch = 0;
+  document.addEventListener('touchend', e => {
+    const now = Date.now();
+    if (now - lastTouch <= 300) e.preventDefault();
+    lastTouch = now;
+  }, { passive: false });
+
+  // 桌面浏览器按住 Ctrl 滚轮缩放也一并挡掉，保持与手机一致的「页面锁定」体验
+  document.addEventListener('wheel', e => {
+    if (e.ctrlKey) e.preventDefault();
+  }, { passive: false });
+
+  // iOS 会在输入框聚焦时把整页推上去；聚焦后把滚动位置拉回来
+  document.addEventListener('focusin', e => {
+    const t = e.target;
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT')) {
+      setTimeout(() => window.scrollTo(0, 0), 50);
+    }
+  });
+})();
+</script>
+</body>
+</html>
