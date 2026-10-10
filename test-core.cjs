@@ -33,8 +33,10 @@ const segCalc = cut('function normalizeEntry(', 'function totals()');
 const segCalcHead = 'function normalizeEntry(';
 
 // 包一层函数，这样 return 才合法（顶层 return 是语法错误）
+// 注意 segUtil 里要保留 `const KEY = ...` 本身 —— 后面 BROKEN_PREFIX 依赖它，
+// 剥掉会直接 ReferenceError。
 const code = `(function (crypto, localStorage) {
-${segUtil.replace(/const KEY = [^\n]*\n/, '')}
+${segUtil}
 ${segCalcHead}${segCalc.slice(segCalcHead.length)}
 return { parseCents, fmtCents, fmtSigned, fmtCompact, todayStr, normalizeEntry, gameStats };
 })`;

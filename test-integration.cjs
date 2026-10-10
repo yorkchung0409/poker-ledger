@@ -1677,6 +1677,151 @@ console.log('\n=== 14. 深色主题：色板与对比度 ===');
   ok(!/box-shadow/.test(topbar), '★ 顶栏不再用投影（深色主题里投影会让边缘糊掉）');
 }
 
+/* ============================================================
+   v22 自检修复的回归测试（对应自检报告的 5 项）
+   ============================================================ */
+console.log('=== 42. 关掉录入面板会丢数据（自检 #1）===');
+/** 备好一位人员，并打开录入面板把人挑进表格 */
+function stageGame(t) {
+  t.win.eval(`db.ledgers[0].players=[{id:'p1',name:'老王'}]; render();`);
+  t.click(t.$('btnAddGame'));
+  t.pickPlayer('老王');
+}
+{
+  // 44a：填了内容后关面板 → 必须弹确认；取消则面板保持打开、数据还在
+  const t = boot();
+  stageGame(t);
+  t.fill(t.prows()[0], { buy: '300', value: '385' });
+  ok(t.$('ovGame').classList.contains('show'), '44a 面板开着');
+
+  let asked = '';
+  t.win.confirm = msg => { asked = msg; return false; };   // 用户选择「不关」
+  t.win.document.querySelectorAll('.overlay')[0]  // 点遮罩
+    .dispatchEvent(new t.win.MouseEvent('click', { bubbles: true }));
+  ok(asked.includes('还没保存'), '44a ★ 点遮罩时拦住了，并说明「还没保存」');
+  ok(t.$('ovGame').classList.contains('show'), '44a 取消后面板仍然打开');
+  eq(t.win.eval('db.ledgers[0].games.length'), 0, '44a 数据确实没落盘');
+
+  // 44b：× 与 Esc 走同一条拦截路径
+  t.win.confirm = () => false;
+  t.click(t.q('[data-i="0"][data-f="buy"]').closest('.sheet').querySelector('[data-close]'));
+  ok(t.$('ovGame').classList.contains('show'), '44b 点 × 也被拦下');
+
+  t.win.confirm = () => false;
+  t.win.document.dispatchEvent(new t.win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  ok(t.$('ovGame').classList.contains('show'), '44b ★ Esc 也被拦下');
+
+  // 44c：只有「打开没填」→ 不打扰，直接关
+  const t2 = boot();
+  stageGame(t2);
+  let asked2 = false;
+  t2.win.confirm = () => { asked2 = true; return true; };
+  t2.win.document.dispatchEvent(new t2.win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  ok(!asked2, '44c 空表关闭不弹确认（不打扰）');
+  ok(!t2.$('ovGame').classList.contains('show'), '44c 空表正常关闭');
+
+  // 44d：保存成功后关面板不弹确认（force 生效）
+  const t3 = boot();
+  stageGame(t3);
+  t3.fill(t3.prows()[0], { buy: '300', value: '385' });
+  let asked3 = false;
+  t3.win.confirm = () => { asked3 = true; return true; };
+  t3.click(t3.$('btnSaveGame'));
+  ok(!asked3, '44d ★ 保存后关闭不问「要不要丢数据」');
+  ok(!t3.$('ovGame').classList.contains('show'), '44d 保存后面板关闭');
+  eq(t3.raw().ledgers[0].games.length, 1, '44d 牌局已落盘');
+}
+
+console.log('=== 43. 结余 0 被当成空值（自检 #2）===');
+{
+  const seed = {
+    'poker-ledger:v1': JSON.stringify({
+      version: 1, currentId: 'L', ledgers: [{
+        id: 'L', name: 'T', players: [{ id: 'p1', name: '老王' }, { id: 'p2', name: '小李' }],
+        games: [{
+          id: 'g1', date: '2026-10-01', buyDefault: 20000,
+          entries: [
+            { playerId: 'p1', playerName: '老王', buys: [20000], balance: 0 },      // ★ 结余真值 0（打平走人）
+            { playerId: 'p2', playerName: '小李', buys: [20000], balance: 40000 },  // 正好 +200，凑成零和
+          ],
+        }],
+      }],
+    }),
+  };
+  const t = boot(seed);
+  t.click(t.$('btnGames') || t.$('headGames'));
+  t.win.eval(`openGameSheet('g1')`);
+  eq(t.q('[data-i="0"][data-f="value"]').value, '0', '★ 结余 0 正确回显成 "0"，不是空');
+  ok(t.$('calcHint').textContent.includes('已平衡'), '结余 0 与持平的行仍然零和平衡');
+
+  // 回存一次，数据不能被改坏
+  t.click(t.$('btnSaveGame'));
+  const g = t.raw().ledgers[0].games[0];
+  eq(g.entries[0].balance, 0, '★ 保存后结余仍是 0（没被当成空值抹掉）');
+
+  // 字段缺失的旧数据 → 仍应显示为空 / 未结算
+  const t2 = boot();
+  t2.win.eval(`db.ledgers[0].players=[{id:'p1',name:'老王'}];
+                db.ledgers[0].games=[{id:'g1',date:'2026-10-01',buyDefault:0,
+                  entries:[{playerId:'p1',playerName:'老王',buys:[20000]}]}];`);
+  t2.win.eval(`openGameSheet('g1')`);
+  eq(t2.q('[data-i="0"][data-f="value"]').value, '', '字段缺失的老数据仍回显为空（不被凭空补 0）');
+  eq(t2.q('.pf').textContent, '未结算', '字段缺失的老数据仍标记未结算');
+}
+
+console.log('=== 44. 存档损坏不再被静默清空（自检 #3）===');
+{
+  const good = '{"version":1,"currentId":"L","ledgers":[{"id":"L","name":"我的账本","players":[{"id":"p1","name":"老王"}],"games":[{"id":"g1","date":"2026-10-01","entries":[{"playerId":"p1","playerName":"老王","buyIn":30000,"balance":38500}]}]}]}';
+  const t = boot({ 'poker-ledger:v1': good.slice(0, good.length - 3) });   // 模拟被截断
+  ok(!t.$('alertBar').hidden, '★ 损坏后顶部出现常驻告警条');
+  ok(t.$('alertTitle').textContent.includes('损坏'), '告警条说明了是存档损坏');
+  ok(t.$('alertDesc').textContent.includes('原始内容已保留'), '告警条说明原件已保留');
+
+  // ★ 关键：原始数据必须还在（能导出），不能被空账本覆盖
+  const kept = [...t.store.keys()].filter(k => k.startsWith('poker-ledger:v1:broken:'));
+  eq(kept.length, 1, '★ 损坏原件被另存了一个副本');
+  eq(t.store.get(kept[0]), good.slice(0, good.length - 3), '★ 副本内容与原始损坏串逐字节一致');
+  ok(!t.$('btnAlertExport').hidden, '告警条上有「导出原始数据」按钮');
+
+  // 导出按钮真的能触发下载
+  let clicked = null;
+  const origCreate = t.win.URL.createObjectURL;
+  t.win.URL.createObjectURL = b => { clicked = b.parts[0]; return 'blob:x'; };
+  t.click(t.$('btnAlertExport'));
+  ok(clicked === good.slice(0, good.length - 3), '★ 点导出拿到的正是损坏原文');
+  t.win.URL.createObjectURL = origCreate;
+
+  // 存档完好时不该出现这条告警
+  const t2 = boot({ 'poker-ledger:v1': good });
+  ok(t2.$('alertBar').hidden, '存档正常时不显示告警条');
+}
+
+console.log('=== 45. 存储写入失败要明确告知（自检 #5）===');
+{
+  const t = boot();
+  t.win.eval('saveBroken = true; render();');
+  ok(!t.$('alertBar').hidden, '★ 写盘失败时告警条出现');
+  ok(t.$('alertTitle').textContent.includes('未保存'), '告警条标题是「数据未保存」');
+  ok(t.$('alertDesc').textContent.includes('无痕模式'), '告警条点明无痕模式这个常见原因');
+  ok(t.$('btnAlertExport').hidden, '此时没有可导出的原件，按钮隐藏');
+
+  // 「知道了」能关掉
+  t.click(t.$('btnAlertDismiss'));
+  ok(t.$('alertBar').hidden, '★ 点「知道了」可关闭告警条');
+}
+
+console.log('=== 46. 缺失姓名不再显示 undefined（自检 #4）===');
+{
+  const t = boot();
+  t.win.eval(`db.ledgers[0].players = [];
+              db.ledgers[0].games = [{id:'g1',date:'2026-10-01',entries:[{playerId:'pX',balance:10000}]}];
+              render();`);
+  const rankName = t.q('.rank-name').textContent;
+  ok(rankName && rankName !== 'undefined' && rankName !== 'null',
+     `★ 排行榜不显示 undefined（实际 "${rankName}"）`);
+  ok(!visibleText(t.doc).includes('undefined'), '★ 整个页面都不含字面量 undefined');
+}
+
 console.log(`\n${'='.repeat(50)}`);
 console.log(`通过 ${pass} / ${pass + fail}`);
 if (fail > 0) { console.log(`失败 ${fail} 项`); process.exit(1); }

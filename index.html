@@ -762,6 +762,39 @@
   }
   .toast.show { opacity: 1; transform: translate(-50%, 0); }
 
+  /* ===== 存储告警条 =====
+     唯一一处允许用警示色的常驻元素 —— 它代表「你的数据可能没存上」，
+     是整个应用里最不该被忽略的信息，所以放在顶栏正下方、正文之上。 */
+  .alert-bar {
+    display: flex; align-items: center; gap: 10px;
+    margin: 10px 14px 0; padding: 11px 12px;
+    background: rgba(217, 38, 38, 0.14);
+    border: 1px solid rgba(217, 38, 38, 0.5);
+    border-radius: 10px;
+  }
+  .alert-bar[hidden] { display: none; }
+  .alert-icon {
+    flex: none; width: 22px; height: 22px; border-radius: 50%;
+    background: var(--win); color: #fff; font-size: 14px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .alert-body { flex: 1; min-width: 0; }
+  .alert-title { font-size: 13.5px; font-weight: 600; color: var(--text); line-height: 1.45; }
+  .alert-desc { font-size: 12px; color: var(--muted); line-height: 1.5; margin-top: 2px; }
+  .alert-actions { flex: none; display: flex; gap: 6px; }
+  .alert-btn {
+    border: 1px solid rgba(217, 38, 38, 0.55); background: rgba(217, 38, 38, 0.2);
+    color: var(--text); font-size: 12px; padding: 6px 10px; border-radius: 7px;
+    white-space: nowrap; min-height: 34px;
+  }
+  .alert-btn.ghost { background: transparent; border-color: var(--line); color: var(--muted); }
+  .alert-btn:active { opacity: 0.75; }
+  @media (max-width: 400px) {
+    .alert-bar { flex-wrap: wrap; }
+    .alert-actions { width: 100%; }
+    .alert-btn { flex: 1; }
+  }
+
   .note { font-size: 12px; color: var(--faint); line-height: 1.6; margin-top: 8px; }
   .danger-zone { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 16px; }
 </style>
@@ -784,6 +817,22 @@
       <select class="ledger-select" id="ledgerSelect"></select>
       <button class="ledger-manage" id="btnLedgers">管理账本</button>
     </div>
+  </div>
+</div>
+
+<!-- 存档损坏 / 存储不可用的常驻警示条。
+     这两类问题的共同点是「用户以为数据存上了，其实没有」——
+     toast 2 秒就消失、关掉页面就没人再看见，所以必须常驻在内容最上方，
+     紧贴顶栏（放在 .wrap 之后会跟着内容排到页面底部，等于没有）。 -->
+<div class="alert-bar" id="alertBar" hidden>
+  <div class="alert-icon">!</div>
+  <div class="alert-body">
+    <div class="alert-title" id="alertTitle"></div>
+    <div class="alert-desc" id="alertDesc"></div>
+  </div>
+  <div class="alert-actions">
+    <button class="alert-btn" id="btnAlertExport">导出原始数据</button>
+    <button class="alert-btn ghost" id="btnAlertDismiss">知道了</button>
   </div>
 </div>
 
@@ -1051,12 +1100,28 @@ const todayStr = () => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
 
-const esc = s => String(s).replace(/[&<>"']/g, c =>
+/**
+ * HTML 转义。
+ *
+ * ★ 对 undefined/null 做兜底：`String(undefined)` 会得到字面量 "undefined"，
+ *   直接 esc 只会把它原样渲染到界面上（排行榜曾因此显示 "undefined"）。
+ *   所以先归一成空串。
+ */
+const esc = s => String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, c =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 /* ============================================================
    数据层
    ============================================================ */
+// ★ 这三个状态必须在下面 `load()` 被调用**之前**完成声明。
+//   load() 解析失败时会调 stashBroken() 写 brokenRaw，save() 会写 saveBroken ——
+//   而这两行都在 load() 之后声明，若不提前，`let` 的暂时性死区会直接抛
+//   ReferenceError，让「存档损坏」这条兜底路径自己先崩掉。
+const BROKEN_PREFIX = KEY + ':broken:';
+let brokenRaw = null;         // 本次启动发现的损坏原件（内存里，供导出用）
+let brokenAt = '';            // 发现时间
+let saveBroken = false;       // 最近一次写盘是否失败
+
 let db = load();
 let currentId = db.currentId;
 let rows = [];        // 牌局录入中的临时行
@@ -1067,9 +1132,29 @@ function blankLedger(name) {
   return { id: uid(), name, players: [], games: [], createdAt: now, updatedAt: now };
 }
 
-function load() {
+/**
+ * 存档出问题时不要覆盖原件。
+ *
+ * ★ 为什么必须留副本：load() 的兜底是「开一个新账本」，一旦原数据解析失败，
+ *   紧接着任何一次 save() 都会把这个空账本写回 KEY —— 原始数据（包括损坏的
+ *   那一部分，可能是能手工救回来的）就永久没了。这里先把原始字符串原封不动
+ *   存到另一个 key，之后再动主存档。
+ */
+function stashBroken(raw, reason) {
   try {
-    const raw = localStorage.getItem(KEY);
+    brokenRaw = raw;
+    brokenAt = new Date().toISOString();
+    localStorage.setItem(BROKEN_PREFIX + brokenAt, raw);
+  } catch (e) {
+    // 连副本都写不下（配额满/无痕模式）时，至少留在内存里，导出按钮还能用
+    console.warn('存档损坏且无法留存副本', e);
+  }
+}
+
+function load() {
+  let raw = null;
+  try {
+    raw = localStorage.getItem(KEY);
     if (!raw) throw new Error('empty');
     const parsed = JSON.parse(raw);
     if (!parsed || !Array.isArray(parsed.ledgers) || parsed.ledgers.length === 0) {
@@ -1085,9 +1170,28 @@ function load() {
     }
     return parsed;
   } catch (e) {
+    // ★ 关键：解析失败时把原始内容留一份副本，再开新账本。
+    //   同时挂一个醒目的提示条 —— 用户必须知道「你的数据出问题了」，
+    //   而不是打开 App 看到一片空白，以为数据是自己删掉的。
+    if (raw) stashBroken(raw, e);
     const first = blankLedger('默认账本');
     return { version: 1, currentId: first.id, ledgers: [first] };
   }
+}
+
+/** 导出损坏原件（供用户抢救或反馈） */
+function exportBroken() {
+  if (!brokenRaw) return;
+  const blob = new Blob([brokenRaw], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `扑克记分房-损坏存档-${brokenAt.slice(0, 10)}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast('损坏的原始存档已导出，可发给开发者尝试修复');
 }
 
 /** UI 临时状态（牌局展开/收起）不写入存储，这里剥离掉 */
@@ -1104,8 +1208,14 @@ function serializable(state) {
 function save() {
   try {
     localStorage.setItem(KEY, JSON.stringify(serializable(db)));
+    saveBroken = false;
   } catch (e) {
-    toast('保存失败：浏览器存储空间可能已满');
+    saveBroken = true;
+    // ★ 写盘失败的原因不止「空间满」一种 —— iOS Safari 无痕模式、
+    //   存储被系统回收、用户禁用网站数据，都会让 setItem 直接抛异常。
+    //   这几种情况数据**根本没存进去**，用户必须知道，否则会以为什么都记好了，
+    //   关掉页面才发现全丢了。所以把「数据未保存」写进最显眼的位置。
+    toast('⚠ 数据未保存：请检查浏览器是否处于无痕模式，或存储空间已满', 3600);
   }
 }
 
@@ -1142,6 +1252,12 @@ function touchLedger() {
  *   ③ 什么都没有 → `[]`
  */
 function normalizeEntry(e) {
+  // ★ 结余「是不是 0」和「有没有这个字段」是两件事，必须分开：
+  //   结余 0 = 打平走人，是**真实的结算结果**，要显示、要做零和统计；
+  //   字段缺失 = 这人当时没离桌、结果未知，要显示「未结算」、不计入输赢。
+  //   以前用 `Number(e.balance) || 0` 抹平了两者，于是「缺失」被当成「0」，
+  //   打开编辑框会看到一个凭空多出来的 0，保存后就把空数据写成了实打实的 0。
+  const hasBalance = e.balance !== undefined && e.balance !== null && e.balance !== '';
   const balance = Number(e.balance) || 0;
 
   let buys;
@@ -1165,10 +1281,12 @@ function normalizeEntry(e) {
   const totalBuy = buys.reduce((a, b) => a + b, 0);
   return {
     playerId: e.playerId,
-    playerName: e.playerName,
+    // 旧备份可能没存 playerName，兜个底名，避免详情表里出现空白单元格
+    playerName: String(e.playerName === undefined || e.playerName === null ? '' : e.playerName).trim() || '（未命名）',
     buys,
     totalBuy,
     balance,
+    hasBalance,
     netProfit: balance - totalBuy,
   };
 }
@@ -1199,14 +1317,17 @@ function leaderboard() {
   if (!l) return [];
   const empty = () => ({ net: 0, win: 0, loss: 0, count: 0, totalBuy: 0 });
   const map = new Map();
+  // 名字兜底：很旧的备份可能没存 playerName，缺了就给个能认出来的占位名，
+  // 免得排行榜上出现空白行或字面量 "undefined"
+  const nameOf = p => String((p && p.name) || '').trim() || '（未命名）';
   for (const p of l.players) {
-    map.set(p.id, { id: p.id, name: p.name, ...empty() });
+    map.set(p.id, { id: p.id, name: nameOf(p), ...empty() });
   }
   // 历史牌局里可能有已删除的人员，按牌局内快照补进来
   for (const g of l.games) {
     for (const e of entriesOf(g)) {
       if (!map.has(e.playerId)) {
-        map.set(e.playerId, { id: e.playerId, name: e.playerName, ...empty() });
+        map.set(e.playerId, { id: e.playerId, name: nameOf(e), ...empty() });
       }
       const row = map.get(e.playerId);
       row.net += e.netProfit;
@@ -1243,12 +1364,42 @@ function totals() {
    渲染
    ============================================================ */
 function render() {
+  renderAlertBar();
   renderLedgerSelect();
   renderStats();
   renderRank();
   renderGames();
   const l = ledger();
   document.getElementById('btnAddGame').disabled = !l || l.players.length === 0;
+}
+
+/**
+ * 存储告警条。
+ *
+ * 优先级：写盘失败 > 存档损坏。
+ * 前者是「此刻正在丢数据」，必须压过后者；后者是「历史数据出问题了」，
+ * 修完记得导出原件再清掉提示。
+ */
+function renderAlertBar() {
+  const bar = document.getElementById('alertBar');
+  const title = document.getElementById('alertTitle');
+  const desc = document.getElementById('alertDesc');
+  const btnExport = document.getElementById('btnAlertExport');
+  if (!bar) return;
+
+  if (saveBroken) {
+    bar.hidden = false;
+    title.textContent = '数据未保存';
+    desc.textContent = '浏览器拒绝写入本地存储（常见于无痕模式或空间已满），本次改动不会保留。请先导出备份。';
+    btnExport.hidden = true;
+  } else if (brokenRaw) {
+    bar.hidden = false;
+    title.textContent = '检测到存档损坏，已另存原始数据';
+    desc.textContent = '原存档无法解析，当前显示的是空白账本。原始内容已保留，可导出后尝试修复；导入备份可恢复。';
+    btnExport.hidden = false;
+  } else {
+    bar.hidden = true;
+  }
 }
 
 function renderLedgerSelect() {
@@ -1439,8 +1590,9 @@ function openGameSheet(gameId) {
 
   // 本局买入：记在牌局上。旧数据没有这个字段 → 空（= 不自动记买入）。
   // 注意是「一手」的金额，不是总额；选人时每人记一笔。
+  // ★ buyDefault=0 与「没填」语义相同（都表示不自动记买入），所以这里可以直接用真值判断。
   document.getElementById('inBuyDefault').value =
-    g && g.buyDefault > 0 ? String(g.buyDefault / 100) : '';
+    g && Number.isFinite(g.buyDefault) && g.buyDefault > 0 ? String(g.buyDefault / 100) : '';
 
   rows = g
     ? entriesOf(g).map(e => ({
@@ -1451,7 +1603,11 @@ function openGameSheet(gameId) {
         //   这样编辑旧牌局时，填新金额点 + 就是干净地追加，不会和已有笔打架。
         buys: e.buys.slice(),
         _buyText: '',
-        value: e.balance ? String(e.balance / 100) : '',
+        // ★ 结余 0 是真值，不是「没填」——
+        //   以前写 `e.balance ? ... : ''`，结余正好 0（打平走人）会被当成空，
+        //   一进编辑框就显示空、盈亏列显示「未结算」，保存后把真数据覆盖掉。
+        //   判据用 hasBalance：字段在就回显（哪怕是 0），字段缺才留空。
+        value: e.hasBalance ? String(e.balance / 100) : '',
         _openBuys: false,
       }))
     // ★ 新牌局不预填人员，从 0 行开始。
@@ -1883,7 +2039,7 @@ function saveGame() {
   //   它默认是收起的 —— 刚记完一场却看不到自己刚记的东西，
   //   会让人怀疑「到底存上了没有」。记完就该看得见。
   openSection('secGames', 'headGames');
-  closeSheet('ovGame');
+  closeSheet('ovGame', true);   // 保存成功，不用再问「要不要关」
   render();
 }
 
@@ -2097,18 +2253,53 @@ function openSheet(id) {
   document.getElementById(id).classList.add('show');
   document.body.style.overflow = 'hidden';
 }
-function closeSheet(id) {
+/**
+ * 面板里有没有「还没保存的输入」。
+ *
+ * ★ 这个判断是防误触丢数据的唯一依据。录入面板开着的时候，用户随手点一下遮罩、
+ *   按一下 Esc、或者误碰右上角 ×，closeSheet 就会把 rows 重置掉 —— 刚才敲的
+ *   买入/结余凭空消失，几十秒的输入白费，而且没有任何提示。所以关之前必须问一句。
+ *
+ * 只在「有实际输入」时才提示：
+ *   - rows 为空 / 每一行都是空的 → 关了不亏，直接关
+ *   - 只是打开面板看了眼 → 直接关
+ */
+function sheetHasUnsavedInput() {
+  if (!rows.length) return false;
+  return rows.some(r => {
+    const typed = String(r._buyText === undefined ? '' : r._buyText).trim();
+    const val = String(r.value === undefined || r.value === null ? '' : r.value).trim();
+    const extraBuys = (r.buys || []).length > 0;
+    return typed !== '' || val !== '' || extraBuys;
+  });
+}
+
+/**
+ * 关闭底部面板。
+ *
+ * @param {string} id
+ * @param {boolean} force  true = 跳过「有没有未保存内容」的询问（保存成功后用）
+ * @returns {boolean} 是否真的关上了。false = 用户取消了关闭
+ */
+function closeSheet(id, force) {
+  // 录入面板有未保存输入时，先拦一道。保存成功后的 closeSheet('ovGame') 走 force。
+  if (id === 'ovGame' && !force && sheetHasUnsavedInput()) {
+    if (!confirm('这场牌局还没保存，现在关闭会丢失刚填的内容。\n\n确定关闭吗？')) {
+      return false;
+    }
+  }
   document.getElementById(id).classList.remove('show');
   if (!document.querySelector('.overlay.show')) document.body.style.overflow = '';
+  return true;
 }
 
 let toastTimer = null;
-function toast(msg) {
+function toast(msg, ms) {
   const el = document.getElementById('toast');
   el.textContent = msg;
   el.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => el.classList.remove('show'), 2200);
+  toastTimer = setTimeout(() => el.classList.remove('show'), ms || 2200);
 }
 
 /* ============================================================
@@ -2128,6 +2319,12 @@ document.getElementById('btnLedgers').onclick = () => { renderLedgers(); openShe
 document.getElementById('btnNewLedger').onclick = newLedger;
 
 document.getElementById('btnData').onclick = () => openSheet('ovData');
+
+// 存储告警条的两个按钮
+document.getElementById('btnAlertExport').onclick = exportBroken;
+document.getElementById('btnAlertDismiss').onclick = () => {
+  document.getElementById('alertBar').hidden = true;
+};
 
 /* ============================================================
    分区折叠（排行榜 / 牌局记录）
@@ -2242,9 +2439,14 @@ document.addEventListener('click', e => {
 document.querySelectorAll('.overlay').forEach(ov => {
   ov.addEventListener('click', e => { if (e.target === ov) closeSheet(ov.id); });
 });
+// Esc 关闭面板。★ 从最上层的面板开始关；关不掉（用户放弃未保存内容）就停，
+//   免得 continue 把下面还开着的面板也一起关了。
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') {
-    document.querySelectorAll('.overlay.show').forEach(ov => closeSheet(ov.id));
+  if (e.key !== 'Escape') return;
+  const open = [...document.querySelectorAll('.overlay.show')];
+  if (!open.length) return;
+  for (let i = open.length - 1; i >= 0; i--) {
+    if (closeSheet(open[i].id) === false) return;
   }
 });
 
@@ -2528,6 +2730,14 @@ function addRowFor(player, firstBuy = 0) {
 /* ============================================================
    启动
    ============================================================ */
+// 先探测一次本地存储能不能写：打不开就立刻挂告警条，
+// 不用等用户记完第一场才发现没存上
+try {
+  localStorage.setItem(KEY + ':probe', '1');
+  localStorage.removeItem(KEY + ':probe');
+} catch (e) {
+  saveBroken = true;
+}
 render();
 
 /* ============================================================
