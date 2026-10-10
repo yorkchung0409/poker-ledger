@@ -269,6 +269,24 @@ function closeAllWindows() {
   OPEN_WINDOWS.clear();
 }
 
+/** 分别记录主存档、完整运行态与草稿，不把存储状态当作内存状态。 */
+function failureSnapshot(t) {
+  return {
+    raw: t.seedRaw(),
+    db: t.mem('JSON.stringify({db, currentId})'),
+    draft: t.mem(`JSON.stringify({rows, editGameId, sheetSnapshot, pickSel,
+      sheet: canonicalSheetState(),
+      playerName: document.getElementById('inPlayerName').value,
+      newPlayerName: document.getElementById('inNewPlayerName').value})`),
+  };
+}
+function checkFailureUnchanged(t, before, label) {
+  const after = failureSnapshot(t);
+  eq(after.raw, before.raw, `${label}：主存档逐字节不变`);
+  eq(after.db, before.db, `${label}：完整内存 db 与 currentId 不变`);
+  eq(after.draft, before.draft, `${label}：行/日期/默认买入/编辑状态/选人及姓名草稿不变`);
+}
+
 /** 造一位人员并打开录入面板把人挑进表格 —— 多处复用的起手式 */
 function stageGame(t, name = '老王') {
   t.win.eval(`db.ledgers[0].players=[{id:'p1',name:'${name}'}]; render();`);
@@ -315,6 +333,11 @@ section('A. 金额解析与格式化（纯函数）');
   eq([C('0'), C(''), C('   '), C('100'), C('1.5')].join(','), '0,0,0,10000,150', '合法输入：零/空/空格/整数/一位小数');
   eq([C('1.05'), C('0.01'), C('.5'), C('-1.23'), C('100.00')].join(','), '105,1,50,-123,10000',
      '合法输入：两位小数/最小单位/省略整数位/负数/尾随零');
+  eq([C(null), C(undefined), C('\t\n'), C('0.00'), C('-.5'), C('1.')].join(','), '0,0,0,0,-50,100',
+     '空值/空白/真实零/负小数/尾随小数点保持兼容');
+  for (const text of ['-', '.', '-.', ' - ', ' . ', ' -. ']) {
+    ok(Number.isNaN(C(text)), `★ 无数字金额 ${JSON.stringify(text)} 返回 NaN`);
+  }
   // 非法输入必须返回 NaN（阻断性错误），否则会静默记错账
   const bad = ['abc', '1.234', '1.2.3', '1e5', '1,000', '¥100', '--5'].map(v => Number.isNaN(C(v)));
   ok(bad.every(Boolean), '★ 非法输入全部返回 NaN（字母/三位小数/双小数点/科学计数/千分位/货币符号/双负号）');
@@ -546,6 +569,46 @@ section('G. 牌局 CRUD：结余→盈亏 / 零和校验 / 保存 / 编辑 / 删
   t.click(t.q('[data-del]'));
   eq([t.qa('.game').length, t.raw().ledgers[0].games.length].join(','), '0,0', '★ 删除牌局后 UI 与存储都为空');
   t.close();
+}
+
+// 无数字金额必须走真实保存拒绝路径，而不只是纯函数返回 NaN。
+{
+  for (const field of ['buy', 'value', 'default']) {
+    for (const text of ['-', '.', '-.', ' - ', ' . ', ' -. ']) {
+      const t = boot(seedOneLedger());
+      stageGame(t);
+      t.fill(t.prows()[0], { buy: '100', value: '100' });
+      t.setBuyDefault('100');
+      const input = field === 'default' ? t.$('inBuyDefault') : t.field(t.prows()[0], field);
+      t.set(input, text);
+      const before = failureSnapshot(t);
+      let writes = 0;
+      const setItem = t.win.localStorage.setItem;
+      t.win.localStorage.setItem = (...args) => { writes++; setItem(...args); };
+      t.$('inDate').focus();
+      t.click(t.$('btnSaveGame'));
+      const label = `拒绝 ${field}=${JSON.stringify(text)}`;
+      eq(writes, 0, `${label}：不尝试写盘`);
+      checkFailureUnchanged(t, before, label);
+      ok(t.$('ovGame').classList.contains('show'), `${label}：面板保持打开`);
+      eq(t.doc.activeElement, input, `${label}：聚焦对应错误金额输入`);
+      t.close();
+    }
+  }
+  for (const [text, cents, balance] of [['0', 0, 0], ['0.00', 0, 0], ['', 0, null], ['   ', 0, null], ['.5', 50, 50]]) {
+    const t = boot(seedOneLedger());
+    stageGame(t);
+    t.setBuyDefault(text);
+    t.fill(t.prows()[0], { buy: text, value: text });
+    t.click(t.$('btnSaveGame'));
+    const game = t.raw().ledgers[0].games[0];
+    ok(!!game && !t.$('ovGame').classList.contains('show'), `${JSON.stringify(text)}：真实保存成功并关闭面板`);
+    eq(game?.buyDefault, cents, `${JSON.stringify(text)}：默认买入保持零/空白/小数语义`);
+    eq(JSON.stringify(game?.entries[0].buys), JSON.stringify(cents > 0 ? [cents] : []),
+       `${JSON.stringify(text)}：零和空白不生成买入，小数以分保存`);
+    eq(game?.entries[0].balance, balance, `${JSON.stringify(text)}：真实零已结算，空白未结算，小数正确`);
+    t.close();
+  }
 }
 
 section('H. 买入录入生命周期：确认 / 追加 / 撤销 / 非法金额 / 落库形态');
@@ -924,18 +987,24 @@ section('O. 未保存内容保护（关面板会丢数据）');
   t.fill(t.prows()[0], { buy: '300', value: '385' });
 
   // 点遮罩 / × / Esc 走同一条拦截路径
-  let asked = '';
-  t.win.confirm = msg => { asked = msg; return false; };
+  const beforeClose = failureSnapshot(t);
+  let asked = '', confirmCount = 0;
+  t.win.confirm = msg => { asked = msg; confirmCount++; return false; };
   t.win.document.querySelectorAll('.overlay')[0]
     .dispatchEvent(new t.win.MouseEvent('click', { bubbles: true }));
   ok(asked.includes('还没保存') && t.$('ovGame').classList.contains('show')
      && t.win.eval('db.ledgers[0].games.length') === 0,
      '★ 点遮罩时拦住了并说明「还没保存」；取消后面板仍开着，数据没落盘');
-  t.win.confirm = () => false;
+  eq(confirmCount, 1, '点遮罩确认累计 1 次');
+  checkFailureUnchanged(t, beforeClose, '取消遮罩关闭');
   t.click(t.q('[data-i="0"][data-f="buy"]').closest('.sheet').querySelector('[data-close]'));
+  eq(confirmCount, 2, '点 × 确认累计 2 次');
   ok(t.$('ovGame').classList.contains('show'), '点 × 也被拦下');
+  checkFailureUnchanged(t, beforeClose, '取消 × 关闭');
   t.win.document.dispatchEvent(new t.win.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  eq(confirmCount, 3, 'Esc 确认累计 3 次');
   ok(t.$('ovGame').classList.contains('show'), '★ Esc 也被拦下');
+  checkFailureUnchanged(t, beforeClose, '取消 Esc 关闭');
   t.close();
 
   // 只有「打开没填」→ 不打扰，直接关
@@ -968,8 +1037,10 @@ section('P. 写盘失败与失败原子性');
   stageGame(t);
   const oldRaw = t.seedRaw();
   t.fill(t.prows()[0], { buy: '300', value: '385' });
+  const beforeSave = failureSnapshot(t);
   t.setFailWrites(key => key === 'poker-ledger:v1');
   t.click(t.$('btnSaveGame'));
+  checkFailureUnchanged(t, beforeSave, '新牌局保存失败');
   ok(t.seedRaw() === oldRaw && t.mem('db.ledgers[0].games.length') === 0,
      '★ 保存失败不覆盖旧存档，运行态也不增加牌局（落盘成功才替换运行状态）');
   eq([t.fieldIn(0, 'buy'), t.fieldIn(0, 'value'), t.$('ovGame').classList.contains('show')].join(','),
@@ -996,10 +1067,11 @@ section('P. 写盘失败与失败原子性');
   const t3 = boot(seedEdit);
   t3.win.openGameSheet('g1');
   t3.set(t3.field(t3.prows()[0], 'value'), '130');
-  const beforeDb = JSON.stringify(t3.win.eval('db'));
+  const beforeEdit = failureSnapshot(t3);
   t3.setFailWrites(key => key === 'poker-ledger:v1');
   t3.click(t3.$('btnSaveGame'));
-  ok(JSON.stringify(t3.win.eval('db')) === beforeDb && t3.$('ovGame').classList.contains('show'),
+  checkFailureUnchanged(t3, beforeEdit, '编辑保存失败');
+  ok(t3.mem('JSON.stringify({db, currentId})') === beforeEdit.db && t3.$('ovGame').classList.contains('show'),
      '★ 编辑保存失败前后整个运行数据库不变，面板保持打开');
   t3.setFailWrites(false);
   t3.click(t3.$('btnSaveGame'));
@@ -1019,8 +1091,10 @@ section('P. 写盘失败与失败原子性');
   t4.win.prompt = () => '失败账本';
   t4.setFailWrites(key => key === 'poker-ledger:v1');
   t4.click(t4.$('btnLedgers'));
+  const beforeNewLedger = failureSnapshot(t4);
   t4.click(t4.$('btnNewLedger'));
-  ok(t.seedRaw() !== null && t4.seedRaw() === raw4 && t4.mem('db.ledgers.length') === 1
+  checkFailureUnchanged(t4, beforeNewLedger, '新建账本失败');
+  ok(t4.seedRaw() === raw4 && t4.mem('db.ledgers.length') === 1
      && t4.$('ledgerSelect').options.length === 1,
      '★ 新建账本写盘失败：存储、运行态、UI 都不增加账本');
   t4.close();
@@ -1030,7 +1104,9 @@ section('P. 写盘失败与失败原子性');
   t5.win.confirm = () => true;
   t5.setFailWrites(key => key === 'poker-ledger:v1');
   t5.click(t5.$('btnLedgers'));
+  const beforeSwitch = failureSnapshot(t5);
   t5.click(t5.qa('[data-ledger="B"]')[0]);
+  checkFailureUnchanged(t5, beforeSwitch, '切换账本失败');
   ok(t5.seedRaw() === raw5 && t5.mem('currentId') === 'A' && t5.$('ledgerSelect').value === 'A',
      '★ 切换账本写盘失败：存储、运行态、UI 都停在原账本');
   t5.close();
@@ -1040,7 +1116,9 @@ section('P. 写盘失败与失败原子性');
   t6.win.confirm = () => true;
   t6.setFailWrites(key => key === 'poker-ledger:v1');
   t6.click(t6.$('btnLedgers'));
+  const beforeDelLedger = failureSnapshot(t6);
   t6.click(t6.$('btnDelLedger'));
+  checkFailureUnchanged(t6, beforeDelLedger, '删除账本失败');
   ok(t6.seedRaw() === raw6 && t6.mem('db.ledgers.length') === 2 && t6.mem('currentId') === 'A',
      '★ 删除账本写盘失败：账本与 currentId 都保持旧值');
   t6.close();
@@ -1053,7 +1131,9 @@ section('P. 写盘失败与失败原子性');
   t7.win.confirm = () => true;
   t7.setFailWrites(key => key === 'poker-ledger:v1');
   t7.click(t7.$('btnPlayers'));
+  const beforeDelPlayer = failureSnapshot(t7);
   t7.click(t7.q('[data-rmp="p"]'));
+  checkFailureUnchanged(t7, beforeDelPlayer, '删除人员失败');
   ok(t7.seedRaw() === raw7 && t7.mem('db.ledgers[0].players.length') === 1, '★ 删除人员写盘失败：人员仍在');
   t7.close();
 
@@ -1062,7 +1142,9 @@ section('P. 写盘失败与失败原子性');
   t8.setFailWrites(true);
   t8.click(t8.$('btnPlayers'));
   t8.set(t8.$('inPlayerName'), '不应成功');
+  const beforeAddPlayer = failureSnapshot(t8);
   t8.click(t8.$('btnAddPlayer'));
+  checkFailureUnchanged(t8, beforeAddPlayer, '创建人员失败');
   ok(t8.seedRaw() === raw8 && t8.mem('db.ledgers[0].players.length') === 1, '★ 创建人员写盘失败：不增加人员、不改存档');
   t8.close();
 
@@ -1072,7 +1154,9 @@ section('P. 写盘失败与失败原子性');
   t9.click(t9.$('btnAddRow'));
   t9.set(t9.$('inNewPlayerName'), '写盘失败新人');
   t9.setFailWrites(true);
+  const beforeAddPick = failureSnapshot(t9);
   t9.click(t9.$('btnAddPlayerThenPick'));
+  checkFailureUnchanged(t9, beforeAddPick, '新建并选中失败');
   ok(t9.$('inNewPlayerName').value === '写盘失败新人' && t9.mem('db.ledgers[0].players.length') === 1
      && t9.qa('#pickList .pick.on').length === 0,
      '★ 新建并选中写盘失败：输入保留、不加人、不产生成功选中状态');
@@ -1090,10 +1174,14 @@ section('P. 写盘失败与失败原子性');
   t10.setFailWrites(key => key === 'poker-ledger:v1');
   t10.click(t10.$('headGames'));
   t10.click(t10.q('[data-toggle="g"]'));
+  const beforeDelGame = failureSnapshot(t10);
   t10.click(t10.q('[data-del="g"]'));
+  checkFailureUnchanged(t10, beforeDelGame, '删除牌局失败');
   ok(t10.seedRaw() === raw10 && t10.mem('db.ledgers[0].games.length') === 1, '★ 删除牌局写盘失败：牌局仍在');
   t10.click(t10.$('btnData'));
+  const beforeClear = failureSnapshot(t10);
   t10.click(t10.$('btnClearGames'));
+  checkFailureUnchanged(t10, beforeClear, '清空牌局失败');
   ok(t10.seedRaw() === raw10 && t10.mem('db.ledgers[0].games.length') === 1, '★ 清空牌局写盘失败：旧牌局保留、存档不变');
   t10.close();
 
@@ -1103,7 +1191,9 @@ section('P. 写盘失败与失败原子性');
   t12.win.confirm = () => true;
   t12.stubFileReader();
   t12.setFailWrites(key => key === 'poker-ledger:v1' || key.startsWith('poker-ledger:v1:before-import:'));
+  const beforeImport = failureSnapshot(t12);
   t12.win.importData({ text: importRaw });
+  checkFailureUnchanged(t12, beforeImport, '导入写盘失败');
   ok(t12.seedRaw() === raw12 && t12.mem('db.currentId') === 'L' && t12.$('ledgerSelect').value === 'L',
      '★ 导入写盘失败：不覆盖旧存档、不切换 currentId、UI 保持旧账本');
   t12.close();
@@ -1139,7 +1229,9 @@ section('Q. 损坏存档保护与恢复副本');
   });
   t2.click(t2.$('btnPlayers'));
   t2.set(t2.$('inPlayerName'), '可以保存');
+  const beforeArchiveFailure = failureSnapshot(t2);
   t2.click(t2.$('btnAddPlayer'));
+  checkFailureUnchanged(t2, beforeArchiveFailure, '损坏原件副本写失败');
   eq(t2.store.get('poker-ledger:v1'), broken, '★ 副本写入失败时，损坏主存档不被业务写入覆盖');
 
   // 解除 archive 故障后，业务写入恢复正常
@@ -1156,7 +1248,9 @@ section('Q. 损坏存档保护与恢复副本');
   t2.store.set('poker-ledger:v1', broken);
   t2.win.eval('brokenRaw = ' + JSON.stringify(broken) + '; brokenArchived = false;');
   t2.set(t2.$('inPlayerName'), '不会覆盖');
+  const beforeRepeatArchive = failureSnapshot(t2);
   t2.click(t2.$('btnAddPlayer'));
+  checkFailureUnchanged(t2, beforeRepeatArchive, '再次备份损坏原件失败');
   eq(t2.store.get('poker-ledger:v1'), broken, '★ 无法备份损坏原件时不覆盖损坏主存档');
   t2.close();
 
@@ -1190,8 +1284,7 @@ section('Q. 损坏存档保护与恢复副本');
 section('R. 导入校验与导入前快照');
 {
   const base = { version: 1, currentId: 'L', ledgers: [{ id: 'L', name: '旧', players: [], games: [] }] };
-  // 每一类非法结构都必须被整体拒绝：一个字节都不能写进存储。
-  // （raw() 读的就是存储，所以断言存储未变即同时证明「不替换当前数据库」。）
+  // 每一类非法结构都必须被整体拒绝，分别比较存储与完整内存数据库。
   const cases = [
     ['嵌套对象', { ...base, ledgers: [{ ...base.ledgers[0], players: [{}] }] }],
     ['null 人员', { ...base, ledgers: [{ ...base.ledgers[0], players: null }] }],
@@ -1209,11 +1302,12 @@ section('R. 导入校验与导入前快照');
   const rejected = [];
   for (const [label, bad] of cases) {
     const t = boot({ 'poker-ledger:v1': JSON.stringify(base) });
-    const oldRaw = t.seedRaw();
+    const before = failureSnapshot(t);
     t.win.confirm = () => true;
     t.stubFileReader();
     t.win.importData({ text: JSON.stringify(bad) });
-    rejected.push(t.seedRaw() === oldRaw && t.raw().ledgers[0].name === '旧');
+    checkFailureUnchanged(t, before, `非法导入 ${label}`);
+    rejected.push(t.seedRaw() === before.raw && t.raw().ledgers[0].name === '旧');
     t.close();
   }
   ok(rejected.length === cases.length && rejected.every(Boolean),
@@ -1236,10 +1330,33 @@ section('R. 导入校验与导入前快照');
   t3.win.confirm = () => true;
   t3.stubFileReader();
   t3.setFailWrites(key => key.startsWith('poker-ledger:v1:before-import:'));
+  const beforeSnapshot = failureSnapshot(t3);
   t3.win.importData({ text: JSON.stringify(imported) });
+  checkFailureUnchanged(t3, beforeSnapshot, '导入前快照写盘失败');
   ok(t3.seedRaw() === oldRaw3 && t3.raw().ledgers[0].name === '旧',
      '★ 快照写盘失败则整体中止：不覆盖旧存档、不替换数据库');
   t3.close();
+
+  // 快照成功，但主 KEY 写失败：快照保留，旧数据库与草稿不能提前替换。
+  const t4 = boot(seedOneLedger());
+  stageGame(t4);
+  t4.fill(t4.prows()[0], { buy: '100', value: '120' });
+  t4.click(t4.$('btnData'));
+  const beforeMainWrite = failureSnapshot(t4);
+  t4.win.confirm = () => true;
+  t4.stubFileReader();
+  const writes = [];
+  t4.setFailWrites(key => { writes.push(key); return key === 'poker-ledger:v1'; });
+  t4.win.importData({ text: JSON.stringify(imported) });
+  const snapshots = [...t4.store.keys()].filter(k => k.startsWith('poker-ledger:v1:before-import:'));
+  ok(snapshots.length === 1 && t4.store.get(snapshots[0]) === beforeMainWrite.raw,
+     '★ 导入前快照写成功且逐字节保留旧数据');
+  ok(writes.length === 2 && writes[0] === snapshots[0] && writes[1] === 'poker-ledger:v1',
+     '★ 导入确实先写快照成功，再尝试主 KEY 并失败');
+  checkFailureUnchanged(t4, beforeMainWrite, '导入快照成功但主 KEY 写失败');
+  ok(t4.$('ledgerSelect').value === 'L' && t4.$('ovData').classList.contains('show')
+     && t4.$('ovGame').classList.contains('show'), '★ 导入主 KEY 写失败保持旧账本和打开的面板');
+  t4.close();
 }
 
 section('S. CSV 公式注入防护');
@@ -1267,7 +1384,9 @@ section('T. 启动读取失败不得覆盖未知原件');
   t.win.eval('db = load(); currentId = db.currentId; render();');
   t.win.localStorage.getItem = get;
   // 读失败意味着我们并不知道存储里是什么 —— 这时任何写入都可能覆盖掉真数据
+  const beforeReadGuard = failureSnapshot(t);
   t.win.createPlayer('不能覆盖');
+  checkFailureUnchanged(t, beforeReadGuard, '读取失败后禁止覆盖');
   ok(t.seedRaw() === old && t.mem('db.ledgers[0].players.length') === 0,
      '★ 读取曾失败，即便写权限存在也不覆盖未知旧原件；新建失败不虚假提交');
   t.close();
@@ -1326,23 +1445,39 @@ section('U. 渲染健壮性：转义 / 缺失字段 / 历史姓名快照');
   let asked = 0;
   t4.win.confirm = () => { asked++; return false; };
   t4.win.openGameSheet('g');
-  const opened = t4.$('ovGame').classList.contains('show');
+  ok(t4.$('ovGame').classList.contains('show'), '★ 删人后的历史牌局仍可打开编辑');
   t4.click(t4.q('#ovGame [data-close="ovGame"]'));
+  eq(asked, 0, '★ dirty：不改内容关闭，确认累计 0 次');
+  ok(!t4.$('ovGame').classList.contains('show'), '未改内容直接关闭');
   t4.win.closeSheet('ovGame', true);
   t4.win.openGameSheet('g');
   t4.set(t4.q('#inDate'), '2026-01-02');
+  const beforeDateClose = failureSnapshot(t4);
   t4.click(t4.q('#ovGame [data-close="ovGame"]'));
+  eq(asked, 1, '★ dirty：改日期后关闭，确认累计 1 次');
+  ok(t4.$('ovGame').classList.contains('show'), '取消丢弃日期修改后面板保持打开');
+  checkFailureUnchanged(t4, beforeDateClose, '取消丢弃日期修改');
   t4.win.closeSheet('ovGame', true);
+  eq(asked, 1, '强制关闭不额外询问，确认累计仍为 1 次');
   t4.win.openGameSheet('g');
   t4.set(t4.q('#inBuyDefault'), '20');
+  const beforeDefaultClose = failureSnapshot(t4);
   t4.click(t4.q('#ovGame [data-close="ovGame"]'));
+  eq(asked, 2, '★ dirty：改本局买入后关闭，确认累计 2 次');
+  ok(t4.$('ovGame').classList.contains('show'), '取消丢弃本局买入修改后面板保持打开');
+  checkFailureUnchanged(t4, beforeDefaultClose, '取消丢弃本局买入修改');
   t4.win.closeSheet('ovGame', true);
+  eq(asked, 2, '再次强制关闭不额外询问，确认累计仍为 2 次');
   t4.win.openGameSheet('g');
   const del = t4.q('.prow .del');
-  if (del) t4.click(del);
+  ok(!!del, '历史牌局存在可删除录入行');
+  t4.click(del);
+  eq(t4.prows().length, 0, 'dirty 场景确实删光录入行');
+  const beforeDeleteClose = failureSnapshot(t4);
   t4.click(t4.q('#ovGame [data-close="ovGame"]'));
-  ok(opened && !!del && [0, 1, 2, 3].every(n => true) && asked === 3,
-     '★ dirty 检测粒度：删人后仍可编辑；不改内容=0 次、改日期=1 次、改本局买入=2 次、删光行=3 次弹确认');
+  eq(asked, 3, '★ dirty：删光行后关闭，确认累计 3 次');
+  ok(t4.$('ovGame').classList.contains('show'), '取消丢弃删行修改后面板保持打开');
+  checkFailureUnchanged(t4, beforeDeleteClose, '取消丢弃删行修改');
   t4.close();
 }
 

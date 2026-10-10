@@ -1076,12 +1076,12 @@ const uid = () =>
   (crypto.randomUUID ? crypto.randomUUID()
     : 'x' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 
-/** 把用户输入的字符串解析为整数分。非法输入返回 0。 */
+/** 把用户输入的字符串解析为整数分。空白返回 0，非法输入返回 NaN。 */
 function parseCents(str) {
   if (str === null || str === undefined) return 0;
   const s = String(str).trim();
   if (!s) return 0;
-  if (!/^-?\d*(\.\d{0,2})?$/.test(s)) return NaN;   // 最多两位小数
+  if (!/^-?(?:\d+(\.\d{0,2})?|\.\d{1,2})$/.test(s)) return NaN;   // 至少一个数字，最多两位小数
   const neg = s.startsWith('-');
   const body = neg ? s.slice(1) : s;
   const [intPart, decPart = ''] = body.split('.');
@@ -2135,7 +2135,8 @@ function computeEntries() {
     const val = parseCents(r.value);
 
     if (Number.isNaN(typedOk) || Number.isNaN(val)) {
-      return { error: '金额格式有误、超出安全范围或最多保留两位小数' };
+      return { error: '金额格式有误、超出安全范围或最多保留两位小数',
+        inputSelector: `[data-i="${out.length}"][data-f="${Number.isNaN(typedOk) ? 'buy' : 'value'}"]` };
     }
 
     if (typedOk < 0) return { error: '买入不能为负数' };
@@ -2231,7 +2232,11 @@ function updateCalc() {
 function saveGame() {
   const l = ledger();
   const res = computeEntries();
-  if (res.error) { toast(res.error); return; }
+  if (res.error) {
+    toast(res.error);
+    if (res.inputSelector) document.querySelector(res.inputSelector).focus();
+    return;
+  }
   if (res.entries.length === 0) { toast('请至少添加一位人员'); return; }
 
   // 同一场里不能有重复人员
@@ -2254,7 +2259,11 @@ function saveGame() {
 
   // 本局买入（一手金额），整数分。留空 / 填 0 → 存 0（等价于不自动记买入）。
   const rawDefault = parseCents(document.getElementById('inBuyDefault').value);
-  if (!Number.isSafeInteger(rawDefault) || rawDefault < 0) { toast('本局买入金额无效'); return; }
+  if (!Number.isSafeInteger(rawDefault) || rawDefault < 0) {
+    toast('本局买入金额无效');
+    document.getElementById('inBuyDefault').focus();
+    return;
+  }
   const buyDefault = rawDefault;
   const editing = editGameId;
   if (editing && !l.games.some(g => g.id === editing)) { toast('这场牌局已不存在'); return; }
