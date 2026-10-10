@@ -171,7 +171,7 @@ function boot(seed, options = {}) {
     field: (row, f) => [...row.querySelectorAll('input')].find(i => i.dataset.f === f),
     /** 某行某输入框的当前值 */
     fieldIn: (i, f) => {
-      const el = [...api.prows()[i].querySelectorAll('input')].find(x => x.dataset.f === f);
+      const el = api.field(api.prows()[i], f);
       return el ? el.value : null;
     },
     /** 依次填一行：{buy, value} */
@@ -203,7 +203,7 @@ function boot(seed, options = {}) {
      */
     buy: (rowIndex, amount, viaEnter, commitOnly) => {
       const row = api.prows()[rowIndex];
-      const inp = [...row.querySelectorAll('input')].find(i => i.dataset.f === 'buy');
+      const inp = api.field(row, 'buy');
       if (!inp) throw new Error('找不到买入输入框');
       if (!commitOnly) api.set(inp, String(amount));
       if (viaEnter) {
@@ -519,7 +519,17 @@ section('G. 牌局 CRUD：结余→盈亏 / 零和校验 / 保存 / 编辑 / 删
 {
   const t = boot();
   t.addPlayers(['老王', '小李', '阿明']);
+  t.win.eval(`(() => {
+    const counts = { renderRows: 0, updateCalc: 0 };
+    const oldRenderRows = renderRows;
+    const oldUpdateCalc = updateCalc;
+    renderRows = (...args) => { counts.renderRows++; return oldRenderRows(...args); };
+    updateCalc = (...args) => { counts.updateCalc++; return oldUpdateCalc(...args); };
+    window.__v26Counts = counts;
+  })()`);
   t.click(t.$('btnAddGame'));
+  eq(t.win.eval('[__v26Counts.renderRows, __v26Counts.updateCalc].join(",")'), '1,1',
+     '★ 空表 renderRows 不重复触发 updateCalc，外层调用一次即可');
   eq(t.qa('.prow').length, 0, '★ 新牌局从 0 行开始（不预填全部人员）');
   ok(t.$('calcHint').textContent.includes('还没有人上场'), '空表时计算区提示还没有人上场');
 
@@ -615,6 +625,12 @@ section('H. 买入录入生命周期：确认 / 追加 / 撤销 / 非法金额 /
 {
   const t = boot();
   t.addPlayers(['老王', '小李']);
+  t.win.eval(`(() => {
+    const counts = { updateCalc: 0 };
+    const oldUpdateCalc = updateCalc;
+    updateCalc = (...args) => { counts.updateCalc++; return oldUpdateCalc(...args); };
+    window.__v26Counts = counts;
+  })()`);
   t.click(t.$('btnAddGame'));
   t.pickPlayers(['老王', '小李']);
 
@@ -640,7 +656,10 @@ section('H. 买入录入生命周期：确认 / 追加 / 撤销 / 非法金额 /
      '★ 回车也能提交：三笔共 200、结余仍由用户掌握、盈亏 = 300 − 200');
 
   // 展开明细 → 撤销一笔
+  const calcBeforeToggle = t.win.eval('window.__v26Counts.updateCalc');
   t.click(t.prows()[0].querySelector('[data-act="buyList"]'));
+  eq(t.win.eval('window.__v26Counts.updateCalc'), calcBeforeToggle,
+     '★ 买入明细展开只重绘行，不重复计算统计');
   eq([t.qa('.rbi').length, t.qa('[data-act="buyDel"]').length].join(','), '3,3', '点开后明细里 3 笔，每笔都有撤销按钮');
   t.click(t.qa('[data-act="buyDel"]')[2]);
   eq([t.qa('.rbi').length, t.tbText(0), t.fieldIn(0, 'value'), t.pfText(0)].join(','), '2,150,300,+150',
@@ -758,7 +777,7 @@ section('J. 未结算与「真实 0」的区分');
     }],
   };
   const t = boot({ 'poker-ledger:v1': JSON.stringify(state) });
-  t.click(t.$('btnGames') || t.$('headGames'));
+  t.click(t.$('headGames'));
   t.win.openGameSheet('g1');
   eq(t.q('[data-i="0"][data-f="value"]').value, '0', '★ 结余 0 正确回显成 "0"，不是空');
   ok(t.$('calcHint').textContent.includes('已平衡'), '结余 0 与持平的行仍然零和平衡');
@@ -1273,7 +1292,6 @@ section('Q. 损坏存档保护与恢复副本');
      '数据面板显示持久化恢复列表并提供导出按钮');
   if (archiveButtons[0]) {
     second.click(archiveButtons[0]);
-    exported.restore();
     eq(exported.get().text, archiveRaw, '★ 恢复副本导出内容逐字节一致');
   }
   exported.restore();

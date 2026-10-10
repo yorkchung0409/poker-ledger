@@ -183,9 +183,6 @@
   /* 折叠体：收起时整块不占位（display:none），不残留空白 */
   .fold-body { display: none; }
   .section.open .fold-body { display: block; }
-  /* 排行榜本体是 .card，收起时也要把圆角边框一起收掉 */
-  .section:not(.open) #rankList { display: none; }
-
   .card {
     background: var(--card); border: 1px solid var(--line);
     border-radius: var(--radius); box-shadow: var(--shadow);
@@ -256,19 +253,6 @@
     .game-flow { font-size: 12px; }
   }
 
-  .game-toolbar {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 8px; padding: 10px 0;
-  }
-  .game-buyin { font-size: 12.5px; color: var(--muted); }
-  .toolbar-actions { display: flex; gap: 4px; }
-  .mini-btn {
-    background: none; border: none; cursor: pointer; padding: 5px 8px;
-    border-radius: 7px; font-size: 12.5px; color: var(--muted); font-family: inherit;
-  }
-  .mini-btn:hover { background: var(--surface2); color: var(--text); }
-  .mini-btn.danger:hover { background: rgba(255,92,92,0.12); color: var(--win); }
-
   table.detail { width: 100%; border-collapse: collapse; font-size: 13.5px; }
   table.detail th {
     font-weight: 400; color: var(--muted); font-size: 12px;
@@ -328,8 +312,6 @@
     display: inline-flex; align-items: center; gap: 4px;
   }
   .btn-people:hover { background: var(--primary-softer); }
-  .btn-danger { background: var(--win); color: var(--primary-ink); font-weight: 600; }
-  .btn-danger:hover { filter: brightness(1.07); }
   .btn-sm { padding: 8px 13px; font-size: 13.5px; }
   .btn-block { width: 100%; }
 
@@ -484,19 +466,17 @@
      ★ 「买入」列 86px 是六列里最宽的：只有它装了**两个**控件
        （输入框 + 叠在上面的 + 按钮），按钮吃掉约 32px 右内边距，
        剩下的才是能写字的宽度。宽屏 86 − 6 − 36 = 44px，够写「2000」。 */
-  .prow {
-    display: grid;
-    grid-template-columns: minmax(64px, 1.4fr) 86px 72px 68px 70px 20px;
-    gap: 5px; align-items: center; margin-bottom: 9px;
-  }
-  /* ★ 单行：明细入口挪到「总买入」列后，买入格不再有第二行，
-     所有单元格回到第 1 行。展开明细时才由 .rbd 另起第 2 行。 */
-  .prow > * { grid-row: 1; }
+  .prow,
   .prow-head {
     display: grid;
     grid-template-columns: minmax(64px, 1.4fr) 86px 72px 68px 70px 20px;
-    gap: 5px; font-size: 11px; color: var(--muted); margin-bottom: 6px;
+    gap: 5px;
   }
+  .prow { align-items: center; margin-bottom: 9px; }
+  /* ★ 单行：明细入口挪到「总买入」列后，买入格不再有第二行，
+     所有单元格回到第 1 行。展开明细时才由 .rbd 另起第 2 行。 */
+  .prow > * { grid-row: 1; }
+  .prow-head { font-size: 11px; color: var(--muted); margin-bottom: 6px; }
   .prow-head > div { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .prow-head .r { text-align: right; }
   /* ★ 输入控件一律 16px —— iOS Safari 只对 font-size < 16px 的 input/select
@@ -579,7 +559,7 @@
   .rbi {
     display: inline-flex; align-items: center; gap: 3px;
     background: var(--surface2); border: 1px solid var(--line); border-radius: 6px;
-    padding: 2px 4px 2px 8px; margin-right: 6px; white-space: nowrap;
+    padding: 2px 4px 2px 8px; margin-right: 12px; white-space: nowrap;
     font-variant-numeric: tabular-nums; color: var(--text);
   }
   .rbx {
@@ -595,9 +575,6 @@
     content: ''; position: absolute; left: -6px; right: -6px; top: -10px; bottom: -10px;
   }
   .rbx:hover { color: var(--win); }
-  /* 明细 chip：给外扩后的热区留出间距，避免相邻两个 × 的热区重叠。
-     （否则点右边那个可能命中左边的。） */
-  .rbi { margin-right: 12px; }
   .rbh { display: block; margin-top: 4px; font-size: 11px; color: var(--faint); }
 
   /* 窄屏（≤480px）：
@@ -726,7 +703,6 @@
   .calc-hint.bad { background: rgba(255,92,92,0.12); color: var(--win); }
   /* 账目不平：数据合法但没配平，用橙色提醒而非红色报错 */
   .calc-hint.warn { background: rgba(245,196,81,0.14); color: var(--gold); }
-  .calc-hint b { font-weight: 700; }
   /* 「差 X 未平」是这一栏里唯一需要你动手的地方，加重一档把它顶出来 ——
      赢/输两个数只是背景，差多少才是要处理的事。
      nowrap：「差 ¥500.00」和「未平」拆到两行会读断（「未平」孤零零挂在下一行），
@@ -929,7 +905,7 @@
       </div>
 
       <!-- ★ 本局买入：这一桌的「一手」多少钱。
-           选人上场时，每人自动按这个数记第一笔买入 —— 省掉逐个填的重复劳动。
+           选人上场时，每人自动按这个数记初始买入 —— 省掉逐个填的重复劳动。
            记在牌局上（game.buyDefault），所以编辑旧牌局时它还在；
            改了它只影响**之后**加入的人，已记好的买入不动（否则会篡改历史）。 -->
       <div class="field">
@@ -1214,7 +1190,7 @@ function archiveRaw(prefix, raw) {
   return key;
 }
 
-function stashBroken(raw, reason) {
+function stashBroken(raw) {
   brokenRaw = raw;
   brokenAt = new Date().toISOString();
   brokenArchived = false;
@@ -1310,7 +1286,7 @@ function load() {
     // ★ 关键：解析失败时把原始内容留一份副本，再开新账本。
     //   同时挂一个醒目的提示条 —— 用户必须知道「你的数据出问题了」，
     //   而不是打开 App 看到一片空白，以为数据是自己删掉的。
-    if (raw) stashBroken(raw, e);
+    if (raw) stashBroken(raw);
     const first = blankLedger('默认账本');
     return { version: 1, currentId: first.id, ledgers: [first] };
   }
@@ -1423,10 +1399,6 @@ function selectLedger(id) {
 
 const ledger = () => db.ledgers.find(l => l.id === currentId);
 
-function touchLedger() {
-  return changeState(() => {});
-}
-
 /* ============================================================
    计算
    ============================================================ */
@@ -1446,7 +1418,7 @@ function touchLedger() {
  *
  * 数据迁移（旧 → 新）：
  *   ① 更早的 `buyIn: 300` + `rebuys: [200,100]`
- *      → `buys: [300,200,100]`（起始买入变成第 1 笔）
+ *      → `buys: [300,200,100]`（起始买入也保留在明细首位）
  *   ② 更早的 `rebuy: 150` 标量（只有总额，看不出几笔）
  *      → 追加成一笔 `[..., 150]`，总额不变、盈亏不变
  *   ③ 什么都没有 → `[]`
@@ -1468,8 +1440,8 @@ function normalizeEntry(e) {
     buys = e.buys.map(Number).filter(n => Number.isSafeInteger(n) && n > 0);
   } else {
     buys = [];
-    // ① 旧的起始买入 → 第 1 笔
-      const legacyBuyIn = Number(e.buyIn);
+    // ① 旧的起始买入 → 明细首位
+    const legacyBuyIn = Number(e.buyIn);
     if (Number.isSafeInteger(legacyBuyIn) && legacyBuyIn > 0) buys.push(legacyBuyIn);
     // ② 旧的追加明细 / 标量
     if (Array.isArray(e.rebuys)) {
@@ -1554,16 +1526,11 @@ function leaderboard() {
 
 function totals() {
   const l = ledger();
-  if (!l) return { games: 0, totalBuy: 0, people: 0, latestFlow: 0, latestBalanced: true };
-  let totalBuy = 0;
-  for (const g of l.games) {
-    for (const e of entriesOf(g)) totalBuy += e.totalBuy;
-  }
+  if (!l) return { games: 0, people: 0, latestFlow: 0, latestBalanced: true };
   const gs = sortedGames();
   const latest = gs.length ? gameStats(gs[0]) : null;
   return {
     games: l.games.length,
-    totalBuy,
     people: l.players.length,
     latestFlow: latest ? latest.flow : 0,
     latestBalanced: latest ? latest.balanced : true,
@@ -1673,12 +1640,13 @@ function renderChart() {
   if (gs.length < 2) {
     return `<div class="chart-empty">再记一场就能看到流水走势</div>`;
   }
-  const flows = gs.map(g => gameStats(g).flow);
+  const stats = gs.map(gameStats);
+  const flows = stats.map(st => st.flow);
   const max = Math.max(...flows, 1);
   // 最高的一根只占容器的 88%：这样即使是并列最高，也能看出是「柱子」
   // 而不是三条贴顶的实心块（贴顶后会像骨架屏）。
   const bars = flows.map((f, i) => {
-    const pending = gameStats(gs[i]).pending;
+    const pending = stats[i].pending;
     return `<div class="chart-bar" style="height:${Math.max(4, Math.round(f / max * 35))}px${pending ? ';opacity:.45' : ''}"
           title="${pending ? '未结算 · 已结算部分 ' : ''}¥${fmtCents(f)}"></div>`;
   }).join('');
@@ -1721,7 +1689,8 @@ function renderRank() {
   }).join('');
 }
 
-function renderGames() {  const gs = sortedGames();
+function renderGames() {
+  const gs = sortedGames();
   const box = document.getElementById('gameList');
   document.getElementById('gameCount').textContent = gs.length ? `${gs.length} 场` : '';
 
@@ -1737,15 +1706,10 @@ function renderGames() {  const gs = sortedGames();
     return;
   }
 
-  const openSet = new Set(
-    gs.filter(g => g._open).map(g => g.id)
-  );
-
   box.innerHTML = gs.map(g => {
     const st = gameStats(g);
     const es = entriesOf(g);
-    const totalBuy = es.reduce((s, e) => s + e.totalBuy, 0);
-    const isOpen = openSet.has(g.id);
+    const isOpen = g._open;
     return `
     <div class="card game" data-game="${esc(g.id)}">
       <div class="game-head" data-toggle="${esc(g.id)}">
@@ -1874,7 +1838,6 @@ function renderRows() {
       还没有人上场。<br>点下面的 <b>+ 选择人员上场</b> 把今晚到场的人加进来。
     </div>`;
     document.getElementById('btnAddRow').disabled = options.length === 0;
-    updateCalc();
     return;
   }
 
@@ -1894,8 +1857,8 @@ function renderRows() {
     const el = document.createElement('div');
     el.className = 'prow';
     // ★ 状态划分（只有一处真相，避免打架）：
-    //   格子里显示的第 1 笔  = r._buyText（用户正在编的「上桌带的钱」）
-    //   r.buys               = 追加的笔（第 2 笔起），只增不改
+    //   格子里显示的待提交买入 = r._buyText
+    //   r.buys               = 已确认的买入明细，按发生顺序保存
     //   总买入 = parseCents(_buyText) + sum(buys)
     const added = r.buys || [];
     el.innerHTML = `
@@ -1906,7 +1869,7 @@ function renderRows() {
         <div class="rbc-in">
           <input type="text" inputmode="decimal" placeholder="0" value="${esc(r._buyText || '')}"
                  data-i="${i}" data-f="buy"
-                 title="第 1 笔买入（上桌带的钱）。按回车提交并跳到结余；要加筹码就再点回这里填新金额">
+                 title="待提交的买入。按回车提交并跳到结余；要加筹码就再点回这里填新金额">
           <button class="rbb" data-i="${i}" data-act="buy" title="追加一笔买入">+</button>
         </div>
       </div>
@@ -2125,7 +2088,7 @@ function paintProfits() {
 function computeEntries() {
   const out = [];
   for (const r of rows) {
-    // 明细 = 已确认的笔（buys） + 格子里还没点 + 的那一笔（_buyText）
+    // 明细 = 已确认的笔（buys） + 格子里还没点 + 的待提交金额（_buyText）
     const rest = (r.buys || []).filter(n => Number.isSafeInteger(n) && n > 0);
     const typedText = r._buyText === undefined ? '' : r._buyText;
     const typed = parseCents(typedText);
@@ -2187,9 +2150,8 @@ function updateCalc() {
     return true;
   }
 
-  let win = 0, loss = 0, totalBuy = 0, pending = 0;
+  let win = 0, loss = 0, pending = 0;
   for (const e of res.entries) {
-    totalBuy += e.totalBuy;
     // ★ 结余没填的行（未结算）不参与输赢统计 ——
     //   未结算行没有可用于统计的净盈亏。
     if (!e.settled) { pending++; continue; }
@@ -2325,7 +2287,6 @@ function addPlayer() {
   const input = document.getElementById('inPlayerName');
   if (!createPlayer(input.value)) return;
   input.value = '';
-  renderPlayers();
   render();
 }
 
@@ -2444,11 +2405,7 @@ function importData(file) {
       toast('文件格式或数据结构无效，当前数据未改变');
       return;
     }
-    if (!parsed || !Array.isArray(parsed.ledgers) || parsed.ledgers.length === 0) {
-      toast('这不是有效的备份文件');
-      return;
-    }
-    const games = parsed.ledgers.reduce((s, l) => s + (l.games ? l.games.length : 0), 0);
+    const games = parsed.ledgers.reduce((s, l) => s + l.games.length, 0);
     if (!confirm(`即将恢复 ${parsed.ledgers.length} 个账本、${games} 场牌局。\n\n当前设备上的全部数据会被覆盖，确定继续？`)) return;
 
     if (!save(parsed, true)) return;
@@ -2768,7 +2725,7 @@ document.getElementById('gameList').addEventListener('click', e => {
 });
 
 // 录入行：选择人员 / 填买入 / 填结余 / 删除行
-// 「买入」格只记第 1 笔（暂存在 _buyText），回车或点 + 才追加成明细
+// 「买入」格暂存待提交金额（_buyText），回车或点 + 才追加成明细
 const NUMERIC_FIELDS = ['buy', 'value'];
 
 document.getElementById('rowZone').addEventListener('input', e => {
@@ -2777,7 +2734,7 @@ document.getElementById('rowZone').addEventListener('input', e => {
   const f = e.target.dataset.f;
   if (NUMERIC_FIELDS.includes(f)) {
     if (f === 'buy') {
-      // 格子里的是第 1 笔，先记在 _buyText 上（还没提交），实时参与总买入计算
+      // 格子里的待提交金额先记在 _buyText 上，实时参与总买入计算
       rows[+i]._buyText = e.target.value;
     } else {
       rows[+i][f] = e.target.value;
@@ -2829,7 +2786,6 @@ document.getElementById('rowZone').addEventListener('click', e => {
     if (act.dataset.act === 'buyList') {
       rows[i]._openBuys = !rows[i]._openBuys;
       renderRows();
-      updateCalc();
       return;
     }
   }
@@ -2932,7 +2888,7 @@ function syncPickFoot() {
 /**
  * 确认上场：把勾选的人按点选顺序加进表格，并各自动记一笔「本局买入」。
  *
- * ★ 为什么自动记第一笔：一桌人上桌时买入通常一样（每局买入 = 一手）。
+ * ★ 为什么自动记初始买入：一桌人上桌时买入通常一样（每局买入 = 一手）。
  *   逐个填 6 遍同样的数字纯属重复劳动，而且容易漏填导致总买入不对。
  *   这里把它变成「设一次本局买入 → 选人 → 自动带出」。
  *
@@ -2960,9 +2916,9 @@ function confirmPick() {
 }
 
 /**
- * 把某人加进当前牌局的一行（人员管理 / 选人面板都会走到这里）。
+ * 把选人面板确认的人员加进当前牌局的一行。
  * @param {object} player
- * @param {number} firstBuy 首笔买入（整数分），>0 时自动记进明细；0 则不记。
+ * @param {number} firstBuy 初始买入（整数分），>0 时自动记进明细；0 则不记。
  * @returns {boolean} 是否真的加进去了（重复上场返回 false）
  */
 function addRowFor(player, firstBuy = 0) {
