@@ -1873,11 +1873,8 @@ function renderRows() {
           <button class="rbb" data-i="${i}" data-act="buy" title="追加一笔买入">+</button>
         </div>
       </div>
-      <button class="tb" data-tb="${i}" data-i="${i}" ${added.length ? `data-act="buyList"
-              aria-expanded="${r._openBuys ? 'true' : 'false'}"
-              title="查看/撤销买入明细（共 ${added.length} 笔）"` : ''}>
-        <span class="tb-num">—</span>${added.length
-          ? `<span class="tb-badge">${added.length}</span>` : ''}
+      <button class="tb" data-tb="${i}" data-i="${i}">
+        <span class="tb-num">—</span>
       </button>
       <input type="text" inputmode="decimal" placeholder="0" value="${esc(r.value || '')}"
              data-i="${i}" data-f="value" title="离桌时的余额。按回车直接跳下一行的买入">
@@ -1889,6 +1886,28 @@ function renderRows() {
 
   document.getElementById('btnAddRow').disabled = rows.length >= options.length;
   paintProfits();
+}
+
+function syncBuyBadge(r, tbCell) {
+  if (!tbCell) return;
+  const n = (r.buys || []).length;
+  let badge = tbCell.querySelector('.tb-badge');
+  if (n > 0) {
+    if (!badge) {
+      badge = document.createElement('span');
+      badge.className = 'tb-badge';
+      tbCell.appendChild(badge);
+    }
+    badge.textContent = String(n);
+    tbCell.dataset.act = 'buyList';
+    tbCell.setAttribute('aria-expanded', r._openBuys ? 'true' : 'false');
+    tbCell.title = `查看/撤销买入明细（共 ${n} 笔）`;
+  } else {
+    if (badge) badge.remove();
+    delete tbCell.dataset.act;
+    tbCell.removeAttribute('aria-expanded');
+    tbCell.removeAttribute('title');
+  }
 }
 
 /** 一行的买入明细：已确认的每一笔都可单独撤销；未确认的输入单独标注 */
@@ -2031,30 +2050,8 @@ function paintProfits() {
       }
       if (numEl) numEl.textContent = txt; else tbCell.textContent = txt;
 
-      // 笔数角标只在「已确认的笔」> 0 时出现。格子里那笔还没点 + 的不算 ——
-      // 它还没进 buys，此刻算「还没记」。
-      // 角标是绝对定位叠在右上角的，不占横向空间，所以这里只管它的存在与内容，
-      // 不需要为它腾位置（总买入列在窄屏只有 58px，并排会把数字挤掉）。
-      const n = (r.buys || []).length;
-      let badge = tbCell.querySelector('.tb-badge');
-      if (n > 0) {
-        if (!badge) {
-          badge = document.createElement('span');
-          badge.className = 'tb-badge';
-          tbCell.appendChild(badge);
-        }
-        badge.textContent = String(n);
-        // 有明细才可点：挂上 data-act 与 aria-expanded，CSS 靠 aria 驱动展开态样式
-        tbCell.dataset.act = 'buyList';
-        tbCell.setAttribute('aria-expanded', r._openBuys ? 'true' : 'false');
-        tbCell.title = `查看/撤销买入明细（共 ${n} 笔）`;
-      } else {
-        // 没记过买入 → 不可点，入口整个撤掉（免得点了没反应）
-        if (badge) badge.remove();
-        delete tbCell.dataset.act;
-        tbCell.removeAttribute('aria-expanded');
-        tbCell.removeAttribute('title');
-      }
+      // 笔数角标与明细入口由同一处同步，避免不同路径只更新了其中一项。
+      syncBuyBadge(r, tbCell);
     }
 
     const cell = document.querySelector(`[data-pf="${i}"]`);
@@ -2904,10 +2901,12 @@ function confirmPick() {
   const per = buyDefaultCents();
   let added = 0;
   for (const p of picked) {
-    if (addRowFor(p, per)) added++;
+    if (addRowFor(p, per, false)) added++;
   }
 
   if (!added) { toast('这些人都已在场上'); return; }
+  renderRows();
+  updateCalc();
   pickSel = [];
   closeSheet('ovPickPlayer');
   toast(per > 0
@@ -2919,9 +2918,10 @@ function confirmPick() {
  * 把选人面板确认的人员加进当前牌局的一行。
  * @param {object} player
  * @param {number} firstBuy 初始买入（整数分），>0 时自动记进明细；0 则不记。
+ * @param {boolean} refresh 是否在加入后刷新界面
  * @returns {boolean} 是否真的加进去了（重复上场返回 false）
  */
-function addRowFor(player, firstBuy = 0) {
+function addRowFor(player, firstBuy = 0, refresh = true) {
   const used = new Set(rows.map(r => r.playerId));
   if (used.has(player.id)) { toast(`${player.name} 已在场上`); return false; }
 
@@ -2934,8 +2934,10 @@ function addRowFor(player, firstBuy = 0) {
     buys: buy > 0 ? [buy] : [],
     value: '', _openBuys: false,
   });
-  renderRows();
-  updateCalc();
+  if (refresh) {
+    renderRows();
+    updateCalc();
+  }
   return true;
 }
 

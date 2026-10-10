@@ -533,8 +533,10 @@ section('G. 牌局 CRUD：结余→盈亏 / 零和校验 / 保存 / 编辑 / 删
   eq(t.qa('.prow').length, 0, '★ 新牌局从 0 行开始（不预填全部人员）');
   ok(t.$('calcHint').textContent.includes('还没有人上场'), '空表时计算区提示还没有人上场');
 
-  // 买入 100/100/100，结余 300/0/0 -> 盈亏 +200/-100/-100（零和平衡）
+  // 批量确认 3 人：逐人入行但只在确认完成后统一刷新一次。
   t.pickPlayers(['老王', '小李', '阿明']);
+  eq(t.win.eval('[__v26Counts.renderRows, __v26Counts.updateCalc].join(",")'), '2,2',
+     '★ 批量确认 3 人只额外触发一次 renderRows 与一次 updateCalc');
   t.qa('.prow').forEach((row, i) => { t.set(t.field(row, 'buy'), '100'); t.set(t.field(row, 'value'), ['300', '0', '0'][i]); });
   eq([t.pfText(0), t.pfText(1)].join(','), '+200,-100', '★ 结余→盈亏换算：300−100=+200，0−100=-100');
   ok(t.$('calcHint').textContent.includes('已平衡'), '零和校验提示已平衡');
@@ -644,6 +646,8 @@ section('H. 买入录入生命周期：确认 / 追加 / 撤销 / 非法金额 /
   eq([t.buyCount(0), t.tbText(0), t.fieldIn(0, 'buy'), t.fieldIn(0, 'value'), t.pfText(0)].join(','),
      '1,100,,300,+200',
      '★ 点 + 确认第 1 笔：角标 1 笔、格子清空、结余 300 不变、盈亏 +200 不变');
+  eq(t.win.eval(`(() => { const b = document.querySelector('[data-tb="0"]'); return [b.dataset.act, b.getAttribute('aria-expanded')].join(','); })()`),
+     'buyList,false', '★ 买入确认后角标同步挂上明细入口且保持收起态');
 
   // 追加：只进明细，结余不动，盈亏随总买入变化
   t.buy(0, 50);
@@ -664,6 +668,7 @@ section('H. 买入录入生命周期：确认 / 追加 / 撤销 / 非法金额 /
   t.click(t.qa('[data-act="buyDel"]')[2]);
   eq([t.qa('.rbi').length, t.tbText(0), t.fieldIn(0, 'value'), t.pfText(0)].join(','), '2,150,300,+150',
      '★ 撤销 50：剩 2 笔、总买入回到 150、结余不变、盈亏回到 +150');
+  eq(t.buyCount(0), '2', '★ 撤销后角标同步回退为剩余买入笔数');
 
   // 用户改报真实结余 → 盈亏跟着更新
   t.set(t.field(t.prows()[0], 'value'), '350');
@@ -676,6 +681,7 @@ section('H. 买入录入生命周期：确认 / 追加 / 撤销 / 非法金额 /
   eq([t.buyCount(0), t.tbText(0)].join(','), '2,?', '★ 非法买入金额不产生新记录，总买入显示 ? 提示格式错');
   t.set(buyInput(), '');
   eq(t.tbText(0), '150', '清空非法输入后总买入回到 150');
+  ok(t.q('[data-tb="0"]').dataset.act === 'buyList', '★ 输入清空不误删已有买入角标入口');
 
   // 零和收尾：老王 +200（买入 150、结余 350），小李 -200（买入 300、结余 100）
   t.fill(t.prows()[1], { buy: '300', value: '100' });
@@ -743,6 +749,8 @@ section('I. 本局买入默认值：自动记第一笔 / 不追溯 / 可撤销 /
   t.click(t.prows()[1].querySelector('[data-act="buyList"]'));
   t.click(t.qa('[data-act="buyDel"]')[0]);
   eq([t.tbText(1), t.buyCount(1)].join(','), '—,', '★ 自动记的那笔可撤销（不是不可动的隐藏数据）');
+  ok(!t.q('[data-tb="1"]').dataset.act && !t.q('[data-tb="1"]').hasAttribute('aria-expanded'),
+     '★ 撤销最后一笔后角标与明细入口一起移除');
 
   // 落盘
   t.click(t.$('btnSaveGame'));
