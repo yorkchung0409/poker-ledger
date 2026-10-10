@@ -229,6 +229,33 @@
   .caret.open { transform: rotate(180deg); }
 
   .game-body { padding: 0 14px 13px; border-top: 1px solid var(--line); }
+  /* 操作按钮：卡片右上角常驻，实心描边 + 足够大的命中区。
+     ★ 为什么不用原来那种「无边框小字」：灰底灰字在深色卡片上对比度很低，
+       手指又比光标粗 5~10 倍 —— 结果是要么看不见、要么点错旁边那场。
+       现在给足对比（描边 + 主色/红色文字）、28px 高度、8px 间距，
+       并且停在卡片右上角这个「每张牌局固定位置」，形成肌肉记忆。 */
+  .game-head { position: relative; }
+  .game-ops { display: flex; gap: 8px; flex-shrink: 0; }
+  .op-btn {
+    min-height: 28px; padding: 0 12px; cursor: pointer;
+    font-family: inherit; font-size: 12.5px; font-weight: 600; line-height: 26px;
+    color: var(--primary); background: var(--primary-softer);
+    border: 1px solid var(--primary); border-radius: 8px;
+    white-space: nowrap;
+  }
+  .op-btn:hover { background: var(--primary-soft); }
+  .op-btn:active { transform: translateY(1px); }
+  .op-btn.danger { color: var(--win); background: rgba(255,92,92,0.10); border-color: var(--win); }
+  .op-btn.danger:hover { background: rgba(255,92,92,0.18); }
+  /* 窄屏：标题区会被按钮挤窄，日期和流水都允许收缩，按钮保持完整可点。
+     ★ 断点用 390px 而不是 380px：380 那一档已经承载「六列行宽预算」，
+       两个 @media 380 会让样式表里出现两段同名断点，后续维护容易看错。 */
+  @media (max-width: 390px) {
+    .op-btn { padding: 0 10px; font-size: 12px; }
+    .game-head { gap: 8px; padding: 11px 12px; }
+    .game-flow { font-size: 12px; }
+  }
+
   .game-toolbar {
     display: flex; align-items: center; justify-content: space-between;
     gap: 8px; padding: 10px 0;
@@ -251,6 +278,16 @@
   table.detail td { padding: 7px 4px; border-bottom: 1px solid var(--line-soft); }
   table.detail tr:last-child td { border-bottom: none; }
   .cell-net { font-weight: 700; }
+  /* 总买入格：数字 + 追加笔数角标。角标绝对定位在右上角，不把数字挤歪；
+     .tb-wrap 是相对定位锚点。单笔时不显示角标（没有增量信息就不加噪音）。 */
+  .tb-wrap { position: relative; display: inline-block; padding-right: 2px; }
+  .buy-badge {
+    position: absolute; top: -7px; right: -6px;
+    font-size: 8.5px; line-height: 1; font-weight: 700;
+    padding: 2px 3px; border-radius: 5px;
+    background: var(--primary-soft); color: var(--muted);
+    font-variant-numeric: tabular-nums; pointer-events: none;
+  }
 
   .balance-row {
     display: flex; align-items: center; justify-content: flex-end;
@@ -282,6 +319,15 @@
   .btn-primary:disabled { background: var(--surface2); color: var(--faint); cursor: not-allowed; filter: none; }
   .btn-ghost { background: var(--surface); color: var(--text); }
   .btn-ghost:hover { background: var(--surface2); }
+  /* 「+ 人员」：常驻在底栏左侧。以前是纯文字「人员」，两字太轻，
+     用户想加人时得先认出它是个按钮。现在给足边框、加号前缀、
+     和右侧主按钮同高，形成一对明确的「左：加人 / 右：开局」。 */
+  .btn-people {
+    background: var(--surface); color: var(--primary);
+    border: 1px solid var(--primary); font-weight: 600;
+    display: inline-flex; align-items: center; gap: 4px;
+  }
+  .btn-people:hover { background: var(--primary-softer); }
   .btn-danger { background: var(--win); color: var(--primary-ink); font-weight: 600; }
   .btn-danger:hover { filter: brightness(1.07); }
   .btn-sm { padding: 8px 13px; font-size: 13.5px; }
@@ -864,7 +910,7 @@
 
 <div class="fab-bar">
   <div class="fab-inner">
-    <button class="btn btn-ghost" id="btnPlayers">人员</button>
+    <button class="btn btn-people" id="btnPlayers">+ 人员</button>
     <button class="btn btn-primary" id="btnAddGame">+ 记一场牌局</button>
   </div>
 </div>
@@ -1002,6 +1048,7 @@
       <button class="btn btn-ghost btn-block" id="btnExportCsv" style="margin-bottom:9px">导出牌局明细（Excel 可打开）</button>
       <button class="btn btn-ghost btn-block" id="btnImport" style="margin-bottom:9px">从备份文件恢复</button>
       <input type="file" id="fileImport" accept=".json,application/json" style="display:none">
+      <div id="recoveryList" style="margin:14px 0;overflow-wrap:anywhere"></div>
       <div class="note">
         JSON 备份包含全部账本、人员与牌局记录，用于完整恢复。<br>
         Excel 明细是当前账本的逐局流水（人员 / 买入 / 总买入 / 结余 / 盈亏），
@@ -1038,9 +1085,12 @@ function parseCents(str) {
   const neg = s.startsWith('-');
   const body = neg ? s.slice(1) : s;
   const [intPart, decPart = ''] = body.split('.');
-  const cents = (parseInt(intPart || '0', 10) || 0) * 100
-              + parseInt((decPart + '00').slice(0, 2), 10);
-  return neg ? -cents : cents;
+  const centsBig = BigInt(intPart || '0') * 100n
+                 + BigInt((decPart + '00').slice(0, 2));
+  const signed = neg ? -centsBig : centsBig;
+  return signed >= BigInt(Number.MIN_SAFE_INTEGER) && signed <= BigInt(Number.MAX_SAFE_INTEGER)
+    ? Number(signed)
+    : NaN;
 }
 
 /** 整数分 → "1234.50" */
@@ -1121,11 +1171,15 @@ const BROKEN_PREFIX = KEY + ':broken:';
 let brokenRaw = null;         // 本次启动发现的损坏原件（内存里，供导出用）
 let brokenAt = '';            // 发现时间
 let saveBroken = false;       // 最近一次写盘是否失败
+let brokenArchived = false;
+let storageReadFailed = false;
+const IMPORT_PREFIX = KEY + ':before-import:';
 
 let db = load();
 let currentId = db.currentId;
 let rows = [];        // 牌局录入中的临时行
 let editGameId = null;
+let sheetSnapshot = null;
 
 function blankLedger(name) {
   const now = new Date().toISOString();
@@ -1140,35 +1194,118 @@ function blankLedger(name) {
  *   那一部分，可能是能手工救回来的）就永久没了。这里先把原始字符串原封不动
  *   存到另一个 key，之后再动主存档。
  */
-function stashBroken(raw, reason) {
-  try {
-    brokenRaw = raw;
-    brokenAt = new Date().toISOString();
-    localStorage.setItem(BROKEN_PREFIX + brokenAt, raw);
-  } catch (e) {
-    // 连副本都写不下（配额满/无痕模式）时，至少留在内存里，导出按钮还能用
-    console.warn('存档损坏且无法留存副本', e);
+function archiveKeys(prefix) {
+  const keys = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key && key.startsWith(prefix)) keys.push(key);
   }
+  return keys.sort().reverse();
+}
+
+// 以实际副本键作为持久恢复索引，不另写易失配的索引；逐字节去重，不自动删原件。
+function archiveRaw(prefix, raw) {
+  for (const key of archiveKeys(prefix)) {
+    if (localStorage.getItem(key) === raw) return key;
+  }
+  const key = prefix + new Date().toISOString() + ':' + uid();
+  localStorage.setItem(key, raw);
+  if (localStorage.getItem(key) !== raw) throw new Error('副本写入校验失败');
+  return key;
+}
+
+function stashBroken(raw, reason) {
+  brokenRaw = raw;
+  brokenAt = new Date().toISOString();
+  brokenArchived = false;
+  try {
+    archiveRaw(BROKEN_PREFIX, raw);
+    brokenArchived = true;
+  } catch (e) {
+    console.warn('原件仅保留在内存；禁止覆盖主存档', e);
+  }
+}
+
+// 加载、导入、提交共用验证。缺字段可迁移，存在但类型错误的字段拒绝。
+function validateState(input) {
+  const obj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const need = (yes, msg) => { if (!yes) throw new Error(msg); };
+  const id = v => typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v);
+  const text = (v, fallback) => {
+    if (v === undefined || v === null) return fallback;
+    need(typeof v === 'string' && v.length <= 1000, '名称字段无效');
+    return v.trim() || fallback;
+  };
+  const money = (v, positive = false) => {
+    need(typeof v === 'number' && Number.isSafeInteger(v) && Math.abs(v) <= 1000000000000
+      && (!positive || v > 0), '金额必须为范围内的整数分');
+    return v;
+  };
+  const array = (v, label) => {
+    if (v === undefined) return [];
+    need(Array.isArray(v) && v.length <= 100000, label + '必须是数组');
+    return v;
+  };
+  const unique = (items, label) => {
+    const seen = new Set();
+    for (const item of items) {
+      need(obj(item) && id(item.id) && !seen.has(item.id), label + ' ID 无效或重复');
+      seen.add(item.id);
+    }
+  };
+  need(obj(input) && (input.version === undefined || input.version === 1), '不支持的存档版本');
+  need(Array.isArray(input.ledgers) && input.ledgers.length > 0 && input.ledgers.length <= 1000, '账本结构无效');
+  unique(input.ledgers, '账本');
+  let aggregateBuy = 0, aggregateBalance = 0;
+  const ledgers = input.ledgers.map(l => {
+    const players = array(l.players, '人员');
+    const games = array(l.games, '牌局');
+    unique(players, '人员'); unique(games, '牌局');
+    const cleanPlayers = players.map(p => ({ id: p.id, name: text(p.name, '（未命名）'), createdAt: text(p.createdAt, '') }));
+    const cleanGames = games.map(g => {
+      need(typeof g.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(g.date)
+        && Number.isFinite(Date.parse(g.date)) && new Date(g.date).toISOString().slice(0, 10) === g.date, '牌局日期无效');
+      if (g.buyDefault !== undefined) { money(g.buyDefault); need(g.buyDefault >= 0, '默认买入不能为负'); }
+      const seen = new Set();
+      const entries = array(g.entries, '牌局明细').map(e => {
+        need(obj(e) && id(e.playerId) && !seen.has(e.playerId), '明细人员 ID 无效或重复');
+        seen.add(e.playerId);
+        let buys;
+        if (e.buys !== undefined) buys = array(e.buys, '买入').map(n => money(n, true));
+        else {
+          buys = [];
+          if (e.buyIn !== undefined) { money(e.buyIn); need(e.buyIn >= 0, '买入不能为负'); if (e.buyIn > 0) buys.push(e.buyIn); }
+          if (e.rebuys !== undefined) {
+            for (const n of array(e.rebuys, '追加买入')) { money(n); need(n >= 0, '追加买入不能为负'); if (n > 0) buys.push(n); }
+          } else if (e.rebuy !== undefined) { money(e.rebuy); need(e.rebuy >= 0, '追加买入不能为负'); if (e.rebuy > 0) buys.push(e.rebuy); }
+        }
+        const total = buys.reduce((s, n) => s + n, 0);
+        need(Number.isSafeInteger(total) && total <= 1000000000000, '买入合计超出范围');
+        const balance = e.balance === undefined || e.balance === null || e.balance === '' ? null : money(e.balance);
+        aggregateBuy += total; aggregateBalance += Math.abs(balance || 0);
+        need(Number.isSafeInteger(aggregateBuy) && Number.isSafeInteger(aggregateBalance)
+          && aggregateBuy + aggregateBalance <= Number.MAX_SAFE_INTEGER, '存档合计超出安全范围');
+        const p = cleanPlayers.find(p => p.id === e.playerId);
+        return { playerId: e.playerId, playerName: text(e.playerName, p ? p.name : '（未命名）'), buys, balance };
+      });
+      return { id: g.id, date: g.date, buyDefault: g.buyDefault || 0, entries,
+        createdAt: text(g.createdAt, ''), updatedAt: text(g.updatedAt, ''), ...(g._open === true ? { _open: true } : {}) };
+    });
+    return { id: l.id, name: text(l.name, '（未命名账本）'), players: cleanPlayers, games: cleanGames,
+      createdAt: text(l.createdAt, ''), updatedAt: text(l.updatedAt, '') };
+  });
+  if (input.currentId !== undefined) need(id(input.currentId), '当前账本 ID 无效');
+  const selected = ledgers.some(l => l.id === input.currentId) ? input.currentId : ledgers[0].id;
+  return { version: 1, currentId: selected, ledgers };
 }
 
 function load() {
   let raw = null;
   try {
-    raw = localStorage.getItem(KEY);
+    try { raw = localStorage.getItem(KEY); }
+    catch (e) { storageReadFailed = true; saveBroken = true; throw e; }
     if (!raw) throw new Error('empty');
-    const parsed = JSON.parse(raw);
-    if (!parsed || !Array.isArray(parsed.ledgers) || parsed.ledgers.length === 0) {
-      throw new Error('bad shape');
-    }
-    // 补齐可能缺失的字段，兼容早期版本
-    parsed.ledgers.forEach(l => {
-      l.players = Array.isArray(l.players) ? l.players : [];
-      l.games = Array.isArray(l.games) ? l.games : [];
-    });
-    if (!parsed.ledgers.some(l => l.id === parsed.currentId)) {
-      parsed.currentId = parsed.ledgers[0].id;
-    }
-    return parsed;
+    return validateState(JSON.parse(raw));
   } catch (e) {
     // ★ 关键：解析失败时把原始内容留一份副本，再开新账本。
     //   同时挂一个醒目的提示条 —— 用户必须知道「你的数据出问题了」，
@@ -1194,6 +1331,40 @@ function exportBroken() {
   toast('损坏的原始存档已导出，可发给开发者尝试修复');
 }
 
+function downloadArchive(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === null) { toast('副本不可读取'); return; }
+    const blob = new Blob([raw], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `扑克记分房-${key.startsWith(BROKEN_PREFIX) ? '损坏原件' : '导入前备份'}-${key.split(':').slice(3).join('-').replace(/[^A-Za-z0-9_-]/g, '-')}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('恢复副本已导出；有效备份可通过恢复按钮导入');
+  } catch (e) { toast('副本读取失败，请检查存储权限'); }
+}
+
+function renderRecoveryList() {
+  const box = document.getElementById('recoveryList');
+  if (!box) return;
+  try {
+    const keys = [...archiveKeys(BROKEN_PREFIX), ...archiveKeys(IMPORT_PREFIX)];
+    box.innerHTML = keys.length ? '<div class="note"><b>保留的恢复副本（不会自动删除）</b></div>' : '';
+    keys.forEach(key => {
+      const btn = document.createElement('button');
+      btn.className = 'btn btn-ghost btn-block btn-sm';
+      btn.dataset.archive = key;
+      btn.style.marginTop = '7px';
+      const prefix = key.startsWith(BROKEN_PREFIX) ? BROKEN_PREFIX : IMPORT_PREFIX;
+      btn.textContent = `导出${prefix === BROKEN_PREFIX ? '损坏原件' : '导入前备份'} · ${key.slice(prefix.length, prefix.length + 19).replace('T', ' ')}`;
+      btn.onclick = () => downloadArchive(key);
+      box.appendChild(btn);
+    });
+  } catch (e) { box.textContent = '存储不可读取，暂时无法列出恢复副本'; }
+}
+
 /** UI 临时状态（牌局展开/收起）不写入存储，这里剥离掉 */
 function serializable(state) {
   return {
@@ -1205,26 +1376,55 @@ function serializable(state) {
   };
 }
 
-function save() {
+function save(candidate = db, beforeImport = false) {
   try {
-    localStorage.setItem(KEY, JSON.stringify(serializable(db)));
+    // 启动时无法读取不等于没有存档，禁止用临时空账本覆盖未知原件。
+    if (storageReadFailed && !beforeImport) throw new Error('请恢复读取权限并刷新页面后重试');
+    const clean = validateState(candidate);
+    const payload = JSON.stringify(serializable(clean));
+    // 没有经读回确认的副本时绝不覆盖唯一损坏原件；恢复写权限后可重试。
+    if (brokenRaw && !brokenArchived) {
+      archiveRaw(BROKEN_PREFIX, brokenRaw);
+      brokenArchived = true;
+    }
+    if (beforeImport) {
+      const old = localStorage.getItem(KEY);
+      if (old !== null) archiveRaw(IMPORT_PREFIX, old);
+    }
+    localStorage.setItem(KEY, payload);
+    db = clean;
+    currentId = clean.currentId;
+    brokenRaw = null;
+    storageReadFailed = false;
     saveBroken = false;
+    renderAlertBar();
+    return true;
   } catch (e) {
     saveBroken = true;
-    // ★ 写盘失败的原因不止「空间满」一种 —— iOS Safari 无痕模式、
-    //   存储被系统回收、用户禁用网站数据，都会让 setItem 直接抛异常。
-    //   这几种情况数据**根本没存进去**，用户必须知道，否则会以为什么都记好了，
-    //   关掉页面才发现全丢了。所以把「数据未保存」写进最显眼的位置。
-    toast('⚠ 数据未保存：请检查浏览器是否处于无痕模式，或存储空间已满', 3600);
+    renderAlertBar();
+    toast('数据未保存：输入和旧存档已保留。请检查存储权限、空间或数据格式后重试', 3600);
+    return false;
   }
+}
+
+// 所有业务变更都在副本上构造，落盘成功才替换运行状态。
+function changeState(mutator, touch = true) {
+  const candidate = JSON.parse(JSON.stringify(db));
+  const l = candidate.ledgers.find(l => l.id === candidate.currentId);
+  mutator(candidate, l);
+  if (touch && l) l.updatedAt = new Date().toISOString();
+  return save(candidate);
+}
+
+function selectLedger(id) {
+  if (!db.ledgers.some(l => l.id === id)) return false;
+  return changeState(state => { state.currentId = id; }, false);
 }
 
 const ledger = () => db.ledgers.find(l => l.id === currentId);
 
 function touchLedger() {
-  const l = ledger();
-  if (l) l.updatedAt = new Date().toISOString();
-  save();
+  return changeState(() => {});
 }
 
 /* ============================================================
@@ -1253,32 +1453,37 @@ function touchLedger() {
  */
 function normalizeEntry(e) {
   // ★ 结余「是不是 0」和「有没有这个字段」是两件事，必须分开：
-  //   结余 0 = 打平走人，是**真实的结算结果**，要显示、要做零和统计；
+  //   结余 0 = 离桌时确实没有余额，不代表打平，是**真实的结算结果**；
   //   字段缺失 = 这人当时没离桌、结果未知，要显示「未结算」、不计入输赢。
   //   以前用 `Number(e.balance) || 0` 抹平了两者，于是「缺失」被当成「0」，
   //   打开编辑框会看到一个凭空多出来的 0，保存后就把空数据写成了实打实的 0。
-  const hasBalance = e.balance !== undefined && e.balance !== null && e.balance !== '';
-  const balance = Number(e.balance) || 0;
+  const hasBalance = Object.prototype.hasOwnProperty.call(e, 'balance')
+    && e.balance !== undefined && e.balance !== null && e.balance !== '';
+  const rawBalance = hasBalance ? Number(e.balance) : NaN;
+  const balance = Number.isSafeInteger(rawBalance) ? rawBalance : null;
 
   let buys;
   if (Array.isArray(e.buys)) {
     // 已经是新格式
-    buys = e.buys.map(Number).filter(n => Number.isFinite(n) && n > 0);
+    buys = e.buys.map(Number).filter(n => Number.isSafeInteger(n) && n > 0);
   } else {
     buys = [];
     // ① 旧的起始买入 → 第 1 笔
-    const legacyBuyIn = Number(e.buyIn) || 0;
-    if (legacyBuyIn > 0) buys.push(legacyBuyIn);
+      const legacyBuyIn = Number(e.buyIn);
+    if (Number.isSafeInteger(legacyBuyIn) && legacyBuyIn > 0) buys.push(legacyBuyIn);
     // ② 旧的追加明细 / 标量
     if (Array.isArray(e.rebuys)) {
-      buys.push(...e.rebuys.map(Number).filter(n => Number.isFinite(n) && n > 0));
+      buys.push(...e.rebuys.map(Number).filter(n => Number.isSafeInteger(n) && n > 0));
     } else {
-      const legacyRebuy = Number(e.rebuy) || 0;
-      if (legacyRebuy > 0) buys.push(legacyRebuy);
+      const legacyRebuy = Number(e.rebuy);
+      if (Number.isSafeInteger(legacyRebuy) && legacyRebuy > 0) buys.push(legacyRebuy);
     }
   }
 
-  const totalBuy = buys.reduce((a, b) => a + b, 0);
+  const totalBuy = buys.reduce((a, b) => {
+    const sum = a + b;
+    return Number.isSafeInteger(sum) ? sum : NaN;
+  }, 0);
   return {
     playerId: e.playerId,
     // 旧备份可能没存 playerName，兜个底名，避免详情表里出现空白单元格
@@ -1287,7 +1492,7 @@ function normalizeEntry(e) {
     totalBuy,
     balance,
     hasBalance,
-    netProfit: balance - totalBuy,
+    netProfit: balance === null ? null : balance - totalBuy,
   };
 }
 
@@ -1297,12 +1502,13 @@ function entriesOf(g) {
 }
 
 function gameStats(g) {
-  let win = 0, loss = 0;
+  let win = 0, loss = 0, pending = 0;
   for (const e of entriesOf(g)) {
+    if (e.netProfit === null) { pending++; continue; }
     if (e.netProfit > 0) win += e.netProfit;
     else if (e.netProfit < 0) loss += -e.netProfit;
   }
-  return { win, loss, flow: win, diff: win - loss, balanced: win === loss };
+  return { win, loss, pending, flow: win, diff: win - loss, balanced: pending === 0 && win === loss };
 }
 
 function sortedGames() {
@@ -1315,11 +1521,11 @@ function sortedGames() {
 function leaderboard() {
   const l = ledger();
   if (!l) return [];
-  const empty = () => ({ net: 0, win: 0, loss: 0, count: 0, totalBuy: 0 });
+  const empty = () => ({ net: 0, win: 0, loss: 0, count: 0, pending: 0, totalBuy: 0 });
   const map = new Map();
   // 名字兜底：很旧的备份可能没存 playerName，缺了就给个能认出来的占位名，
   // 免得排行榜上出现空白行或字面量 "undefined"
-  const nameOf = p => String((p && p.name) || '').trim() || '（未命名）';
+  const nameOf = p => String((p && (p.name || p.playerName)) || '').trim() || '（未命名）';
   for (const p of l.players) {
     map.set(p.id, { id: p.id, name: nameOf(p), ...empty() });
   }
@@ -1330,10 +1536,14 @@ function leaderboard() {
         map.set(e.playerId, { id: e.playerId, name: nameOf(e), ...empty() });
       }
       const row = map.get(e.playerId);
-      row.net += e.netProfit;
+      if (e.netProfit === null) {
+        row.pending += 1;
+      } else {
+        row.net += e.netProfit;
+        if (e.netProfit > 0) row.win += e.netProfit;
+        else if (e.netProfit < 0) row.loss += -e.netProfit;
+      }
       row.totalBuy += e.totalBuy;
-      if (e.netProfit > 0) row.win += e.netProfit;
-      else if (e.netProfit < 0) row.loss += -e.netProfit;
       row.count += 1;
     }
   }
@@ -1356,7 +1566,8 @@ function totals() {
     totalBuy,
     people: l.players.length,
     latestFlow: latest ? latest.flow : 0,
-    latestBalanced: latest ? latest.balanced : true
+    latestBalanced: latest ? latest.balanced : true,
+    latestPending: latest ? latest.pending : 0
   };
 }
 
@@ -1387,36 +1598,56 @@ function renderAlertBar() {
   const btnExport = document.getElementById('btnAlertExport');
   if (!bar) return;
 
+  let archives = [];
+  try { archives = archiveKeys(BROKEN_PREFIX); } catch (e) { /* 存储不可读 */ }
   if (saveBroken) {
     bar.hidden = false;
     title.textContent = '数据未保存';
-    desc.textContent = '浏览器拒绝写入本地存储（常见于无痕模式或空间已满），本次改动不会保留。请先导出备份。';
-    btnExport.hidden = true;
+    desc.textContent = storageReadFailed
+      ? '无法读取已有存档，已禁止覆盖。请恢复存储权限并刷新；或导入有效备份（会先保存旧原件）。'
+      : '提交未完成，草稿和旧数据已保留。常见原因是无痕模式或空间已满；请检查存储权限后重试。';
   } else if (brokenRaw) {
     bar.hidden = false;
-    title.textContent = '检测到存档损坏，已另存原始数据';
-    desc.textContent = '原存档无法解析，当前显示的是空白账本。原始内容已保留，可导出后尝试修复；导入备份可恢复。';
-    btnExport.hidden = false;
+    title.textContent = brokenArchived ? '检测到存档损坏，原件已保留' : '原始存档未能另存，已禁止覆盖';
+    desc.textContent = brokenArchived
+      ? '当前使用临时空白账本。原件已保留；可以导出原件或导入有效备份恢复。'
+      : '副本未写入，原件仍在主存档和内存中。请立即导出原件；副本写入成功前不会覆盖原存档。';
+  } else if (archives.length) {
+    bar.hidden = false;
+    title.textContent = '当前账本可用，历史原件仍保留';
+    desc.textContent = '数据备份与恢复中可导出历史损坏原件。副本不会自动删除。';
   } else {
     bar.hidden = true;
   }
+  btnExport.hidden = !brokenRaw && !archives.length;
+  if (!brokenRaw && archives.length) {
+    btnExport.onclick = () => downloadArchive(archives[0]);
+  } else { btnExport.onclick = exportBroken; }
+  renderRecoveryList();
 }
 
 function renderLedgerSelect() {
   const sel = document.getElementById('ledgerSelect');
   sel.innerHTML = db.ledgers.map(l => {
     const n = ` (${l.games.length}场)`;
-    return `<option value="${l.id}"${l.id === currentId ? ' selected' : ''}>${esc(l.name + n)}</option>`;
+    return `<option value="${esc(l.id)}"${l.id === currentId ? ' selected' : ''}>${esc(l.name + n)}</option>`;
   }).join('');
+}
+
+/** 空状态里的「+ 添加人员」按钮：把入口放在用户正在看的那块空区域里，
+ *  而不是让人自己在底栏找人。data-act 交给文档级事件委托统一处理。 */
+function emptyAddPlayerBtn() {
+  return `<button class="btn btn-people btn-sm empty-cta" data-act="addPlayer"
+            style="margin-top:14px">+ 添加人员</button>`;
 }
 
 function renderStats() {
   const t = totals();
   const box = document.getElementById('stats');
   const latestText = t.games === 0 ? '—'
-    : (t.latestBalanced
-        ? `¥${fmtCompact(t.latestFlow)}`
-        : '未平');
+    : (t.latestPending > 0
+        ? '未结算'
+        : (t.latestBalanced ? `¥${fmtCompact(t.latestFlow)}` : '未平'));
 
   box.innerHTML = `
     <div class="stats-grid">
@@ -1431,7 +1662,7 @@ function renderStats() {
       <div class="stat">
         <div class="stat-label">最近一场流水</div>
         <div class="stat-value${t.games === 0 ? '' : ' sm'}"
-             ${t.games > 0 && !t.latestBalanced ? 'style="color:var(--win)"' : ''}>${latestText}</div>
+             ${t.games > 0 && !t.latestBalanced && t.latestPending === 0 ? 'style="color:var(--win)"' : ''}>${latestText}</div>
       </div>
     </div>` + renderChart();
 }
@@ -1446,9 +1677,11 @@ function renderChart() {
   const max = Math.max(...flows, 1);
   // 最高的一根只占容器的 88%：这样即使是并列最高，也能看出是「柱子」
   // 而不是三条贴顶的实心块（贴顶后会像骨架屏）。
-  const bars = flows.map(f =>
-    `<div class="chart-bar" style="height:${Math.max(4, Math.round(f / max * 35))}px"
-          title="¥${fmtCents(f)}"></div>`).join('');
+  const bars = flows.map((f, i) => {
+    const pending = gameStats(gs[i]).pending;
+    return `<div class="chart-bar" style="height:${Math.max(4, Math.round(f / max * 35))}px${pending ? ';opacity:.45' : ''}"
+          title="${pending ? '未结算 · 已结算部分 ' : ''}¥${fmtCents(f)}"></div>`;
+  }).join('');
   return `<div class="chart">${bars}</div>`;
 }
 
@@ -1461,24 +1694,29 @@ function renderRank() {
     box.innerHTML = `<div class="empty">
       <div class="empty-icon">♠</div>
       <div class="empty-title">还没有排行</div>
-      <div class="empty-desc">先添加人员，再记一场牌局</div>
+      <div class="empty-desc">${ledger() && ledger().players.length
+        ? '先记一场牌局，这里就会按盈亏排名'
+        : '先添加人员，才能记牌局'}</div>
+      ${ledger() && ledger().players.length ? '' : emptyAddPlayerBtn()}
     </div>`;
     return;
   }
 
   box.innerHTML = list.map((r, i) => {
-    const color = r.net > 0 ? 'var(--win)' : r.net < 0 ? 'var(--lose)' : 'var(--faint)';
+    const color = r.pending ? 'var(--faint)' : r.net > 0 ? 'var(--win)' : r.net < 0 ? 'var(--lose)' : 'var(--faint)';
     const detail = r.count === 0
       ? '未参与'
       : `${r.count} 场 · 投入 ¥${fmtCompact(r.totalBuy)}`
-        + ` · 赢 ¥${fmtCompact(r.win)} / 输 ¥${fmtCompact(r.loss)}`;
+        + ` · 赢 ¥${fmtCompact(r.win)} / 输 ¥${fmtCompact(r.loss)}`
+        + (r.pending ? ` · ${r.pending} 场未结算` : '');
+    const netText = r.pending && r.net === 0 ? '未结算' : fmtSigned(r.net);
     return `<div class="rank-row">
       <div class="rank-no${i === 0 ? ' top' : ''}">${i + 1}</div>
       <div style="min-width:0">
         <div class="rank-name">${esc(r.name)}</div>
         <div class="rank-meta num">${detail}</div>
       </div>
-      <div class="rank-net num" style="color:${color}">${fmtSigned(r.net)}</div>
+      <div class="rank-net num" style="color:${color}">${netText}</div>
     </div>`;
   }).join('');
 }
@@ -1491,7 +1729,10 @@ function renderGames() {  const gs = sortedGames();
     box.innerHTML = `<div class="card"><div class="empty">
       <div class="empty-icon">♣</div>
       <div class="empty-title">还没有牌局记录</div>
-      <div class="empty-desc">点击下方「记一场牌局」开始</div>
+      <div class="empty-desc">${ledger() && ledger().players.length
+        ? '点击下方「记一场牌局」开始'
+        : '第一步：先把今晚上场的人加进来'}</div>
+      ${ledger() && ledger().players.length ? '' : emptyAddPlayerBtn()}
     </div></div>`;
     return;
   }
@@ -1506,32 +1747,33 @@ function renderGames() {  const gs = sortedGames();
     const totalBuy = es.reduce((s, e) => s + e.totalBuy, 0);
     const isOpen = openSet.has(g.id);
     return `
-    <div class="card game" data-game="${g.id}">
-      <div class="game-head" data-toggle="${g.id}">
+    <div class="card game" data-game="${esc(g.id)}">
+      <div class="game-head" data-toggle="${esc(g.id)}">
         <div class="game-left">
           <span class="game-date num">${esc(g.date)}</span>
           <span class="chip">${es.length}人</span>
-          ${st.balanced ? '' : '<span class="chip bad">未平</span>'}
+          ${st.pending ? `<span class="chip">${st.pending}人未结算</span>` : (st.balanced ? '' : '<span class="chip bad">未平</span>')}
         </div>
         <div class="game-right">
-          <span class="game-flow">流水<b class="num" style="color:${st.balanced ? 'var(--text)' : 'var(--win)'}">¥${fmtCompact(st.flow)}</b></span>
+          <span class="game-flow">${st.pending ? '状态' : '流水'}<b class="num" style="color:${st.pending ? 'var(--muted)' : (st.balanced ? 'var(--text)' : 'var(--win)')}" >${st.pending ? '未结算' : `¥${fmtCompact(st.flow)}`}</b></span>
           <span class="caret${isOpen ? ' open' : ''}">▼</span>
+          <!-- 编辑/删除提到卡片右上角：收起时也能直接操作，
+               不必先展开明细再找工具栏。点按钮不会触发折叠（事件委托里已 return）。 -->
+          <span class="game-ops">
+            <button class="op-btn" data-edit="${esc(g.id)}">编辑</button>
+            <button class="op-btn danger" data-del="${esc(g.id)}">删除</button>
+          </span>
         </div>
       </div>
       ${isOpen ? `
       <div class="game-body">
-        <div class="game-toolbar">
-          <!-- 总投入撤了：它 = 各行总买入之和，表格里每一行都有，
-               顶部再来一份纯属重复；「流水」已经能说明规模。 -->
-          <div class="toolbar-actions">
-            <button class="mini-btn" data-edit="${g.id}">编辑</button>
-            <button class="mini-btn danger" data-del="${g.id}">删除</button>
-          </div>
-        </div>
+        <!-- v25：明细表去掉「买入」列。它是总买入的部分重复且只读不可交互，
+             每笔买入的完整明细在编辑面板里点「总买入」格仍能看、能撤；
+             CSV 导出也照常含全部买入。省下的宽度让给人员列（窄屏名字不再被压）。
+             「追加了几笔」这一增量信息合并为总买入右上角的笔数角标。 -->
         <table class="detail">
           <thead><tr>
             <th>人员</th>
-            <th class="r">买入</th>
             <th class="r">总买入</th>
             <th class="r">结余</th>
             <th class="r">盈亏</th>
@@ -1540,29 +1782,20 @@ function renderGames() {  const gs = sortedGames();
             ${es.map(e => {
               const c = e.netProfit > 0 ? 'var(--win)'
                       : e.netProfit < 0 ? 'var(--lose)' : 'var(--faint)';
-              // 买入列：多笔时显示「合计 · N 笔」，单笔只显示金额
-              const buyDetail = e.buys.length > 1
-                ? `${fmtCompact(e.buys[0])}<span style="color:var(--faint);font-size:11px"> +${e.buys.length - 1} 笔</span>`
-                : (e.buys.length ? fmtCompact(e.buys[0]) : '—');
               return `<tr>
                 <td>${esc(e.playerName)}</td>
-                <td class="r num" style="color:${e.buys.length ? 'var(--muted)' : 'var(--faint)'}">${buyDetail}</td>
-                <td class="r num" style="font-weight:600">${fmtCompact(e.totalBuy)}</td>
-                <td class="r num">${fmtCompact(e.balance)}</td>
-                <td class="r num cell-net" style="color:${c}">${fmtSignedYuan(e.netProfit)}</td>
+                <td class="r num" style="font-weight:600"><span class="tb-wrap">${fmtCompact(e.totalBuy)}${e.buys.length > 1 ? `<span class="buy-badge">${e.buys.length}笔</span>` : ''}</span></td>
+                <td class="r num">${e.balance === null ? '未结算' : fmtCompact(e.balance)}</td>
+                <td class="r num cell-net" style="color:${c}">${e.netProfit === null ? '未结算' : fmtSignedYuan(e.netProfit)}</td>
               </tr>`;
-              // ★ v20：同样改整元显示（这张表在手机上也要横向装进 320~430px），
-              //   与行内「总买入 / 盈亏」两列的写法保持一致。
-              //   ⚠️ 只动展示 —— tfoot 的合计仍走 fmtCents，保证「合计数
-              //   永远等于各笔精确值之和」，不会因为舍入对不上账。
             }).join('')}
           </tbody>
         </table>
         <div class="balance-row num">
           <span>赢 ¥${fmtCents(st.win)}</span>
           <span>输 ¥${fmtCents(st.loss)}</span>
-          <span style="color:${st.balanced ? 'var(--lose)' : 'var(--win)'}">
-            ${st.balanced ? '已平衡' : `差 ¥${fmtCents(Math.abs(st.diff))} 未平`}
+          <span style="color:${st.pending ? 'var(--faint)' : (st.balanced ? 'var(--lose)' : 'var(--win)')}"${st.pending ? ' class="pending-tip"' : ''}>
+            ${st.pending ? `${st.pending} 人未结算` : (st.balanced ? '已平衡' : `差 ¥${fmtCents(Math.abs(st.diff))} 未平`)}
           </span>
         </div>
       </div>` : ''}
@@ -1576,7 +1809,7 @@ function renderGames() {  const gs = sortedGames();
 function openGameSheet(gameId) {
   const l = ledger();
   if (!l) return;
-  if (l.players.length === 0) {
+  if (l.players.length === 0 && !gameId) {
     toast('请先添加人员');
     openSheet('ovPlayers');
     return;
@@ -1603,11 +1836,9 @@ function openGameSheet(gameId) {
         //   这样编辑旧牌局时，填新金额点 + 就是干净地追加，不会和已有笔打架。
         buys: e.buys.slice(),
         _buyText: '',
-        // ★ 结余 0 是真值，不是「没填」——
-        //   以前写 `e.balance ? ... : ''`，结余正好 0（打平走人）会被当成空，
-        //   一进编辑框就显示空、盈亏列显示「未结算」，保存后把真数据覆盖掉。
+        // ★ 结余 0 仍是真实的已结算值，不是「没填」——
         //   判据用 hasBalance：字段在就回显（哪怕是 0），字段缺才留空。
-        value: e.hasBalance ? String(e.balance / 100) : '',
+        value: e.hasBalance && e.balance !== null ? String(e.balance / 100) : '',
         _openBuys: false,
       }))
     // ★ 新牌局不预填人员，从 0 行开始。
@@ -1620,6 +1851,7 @@ function openGameSheet(gameId) {
   // 编辑时把不在当前人员列表里的历史成员补回选项，避免数据丢失
   renderRows();
   updateCalc();
+  sheetSnapshot = canonicalSheetState();
   openSheet('ovGame');
 }
 
@@ -1668,7 +1900,7 @@ function renderRows() {
     const added = r.buys || [];
     el.innerHTML = `
       <select data-i="${i}" data-f="player">
-        ${options.map(p => `<option value="${p.id}"${p.id === r.playerId ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}
+        ${options.map(p => `<option value="${esc(p.id)}"${p.id === r.playerId ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}
       </select>
       <div class="rbc">
         <div class="rbc-in">
@@ -1715,7 +1947,7 @@ function renderBuyDetail(r, i) {
     : '';
 
   return `<div class="rbd">买入明细：${items}${pending}
-    <span class="rbh">撤销某笔时，总买入与结余会同步回落 ¥该笔金额。格子里那一笔直接改数字或清空即可。</span></div>`;
+    <span class="rbh">撤销某笔时只移除该笔买入；结余是独立填写的结果。格子里那一笔直接改数字或清空即可。</span></div>`;
 }
 
 /**
@@ -1785,7 +2017,7 @@ function doBuy(i, opts = {}) {
   }
 }
 
-/** 撤销一笔买入：总额与结余都不需要回滚（结余从未因它变过） */
+/** 撤销一笔买入：只移除该笔明细，结余是用户填写的独立结果 */
 function undoBuy(i, k) {
   const r = rows[i];
   if (!r || !r.buys || r.buys[k] === undefined) return;
@@ -1794,7 +2026,7 @@ function undoBuy(i, k) {
 
   renderRows();
   updateCalc();
-  toast(`已撤销一笔买入 ¥${fmtCompact(amt)}，盈亏不变`);
+  toast(`已撤销一笔买入 ¥${fmtCompact(amt)}，结余不变`);
 }
 
 /**
@@ -1894,7 +2126,7 @@ function computeEntries() {
   const out = [];
   for (const r of rows) {
     // 明细 = 已确认的笔（buys） + 格子里还没点 + 的那一笔（_buyText）
-    const rest = (r.buys || []).filter(n => Number.isFinite(n) && n > 0);
+    const rest = (r.buys || []).filter(n => Number.isSafeInteger(n) && n > 0);
     const typedText = r._buyText === undefined ? '' : r._buyText;
     const typed = parseCents(typedText);
     const typedOk = Number.isNaN(typed)
@@ -1903,28 +2135,37 @@ function computeEntries() {
     const val = parseCents(r.value);
 
     if (Number.isNaN(typedOk) || Number.isNaN(val)) {
-      return { error: '金额格式有误，最多保留两位小数' };
+      return { error: '金额格式有误、超出安全范围或最多保留两位小数' };
     }
 
-    const buys = (typedOk > 0 ? [typedOk] : []).concat(rest);
-    const totalBuy = buys.reduce((a, b) => a + b, 0);
+    if (typedOk < 0) return { error: '买入不能为负数' };
+    const buys = rest.concat(typedOk > 0 ? [typedOk] : []);
+    const totalBuy = buys.reduce((a, b) => {
+      const sum = a + b;
+      return Number.isSafeInteger(sum) ? sum : NaN;
+    }, 0);
+    if (!Number.isSafeInteger(totalBuy)) {
+      return { error: '金额总和超出安全范围' };
+    }
 
     // ★ 结余格是不是真的填过？
-    //   加了「本局买入自动记一笔」之后，新人一上场就带着 200 买入、
-    //   而结余还是空的 —— 按 盈亏 = 结余 − 总买入 会立刻显示 −200，
-    //   看着像「刚坐下就输了 200」。其实只是还没离桌、结果未知。
-    //   所以在结余没填之前，这行的盈亏标成「未结算」，不计入输赢统计。
+    //   买入已记、结余仍为空时，结果未知，不把本金误算成亏损。
     const settled = String(r.value === undefined || r.value === null ? '' : r.value).trim() !== '';
+    const netProfit = settled ? val - totalBuy : null;
+    if (settled && !Number.isSafeInteger(netProfit)) {
+      return { error: '净盈亏超出安全范围' };
+    }
 
-    out.push({
+    const entry = {
       playerId: r.playerId,
       playerName: r.playerName,
       buys,
       totalBuy,
-      balance: val,
-      netProfit: val - totalBuy,
-      settled,               // false = 已买入但结余未填，结果未知
-    });
+      balance: settled ? val : null,
+      netProfit,
+      settled,
+    };
+    out.push(entry);
   }
   return { entries: out };
 }
@@ -1949,15 +2190,16 @@ function updateCalc() {
   for (const e of res.entries) {
     totalBuy += e.totalBuy;
     // ★ 结余没填的行（未结算）不参与输赢统计 ——
-    //   它的 netProfit 只是「−本金」，不是真结果，算进去会凭空造出亏损。
+    //   未结算行没有可用于统计的净盈亏。
     if (!e.settled) { pending++; continue; }
     if (e.netProfit > 0) win += e.netProfit;
     else if (e.netProfit < 0) loss += -e.netProfit;
   }
-  const balanced = win === loss;
+  const balanced = pending === 0 && win === loss;
 
   // 区分两种情况：
   // - 账目不平：数据本身合法，只是还没输完/算错，允许保存但用橙色提醒
+  // - 有未结算：不宣称已平衡，允许保存并标出待补结果
   // - 格式错误：已在上面 return，属阻断性问题，用红色
   box.className = 'calc-hint' + (balanced ? '' : ' warn');
 
@@ -1966,11 +2208,15 @@ function updateCalc() {
   // 得自己在脑子里对两个数。把基数摊开，方向与差距同时可见。
   //
   // 平衡时保持原样（只有一个「流水」总额，没有两侧可分）。
-  const flow = balanced
-    ? `<span class="num">已平衡 · 流水 ¥${fmtCents(win)}</span>`
-    : `<span class="num">赢 ¥${fmtCents(win)}</span>
+  const flow = pending
+    ? `<span class="num">赢 ¥${fmtCents(win)}</span>
        <span class="num">输 ¥${fmtCents(loss)}</span>
-       <span class="num sum-gap">差 ¥${fmtCents(Math.abs(win - loss))} 未平</span>`;
+       ${win !== loss ? `<span class="num sum-gap">差 ¥${fmtCents(Math.abs(win - loss))} 未平（已结算部分）</span>` : ''}`
+    : (balanced
+      ? `<span class="num">已平衡 · 流水 ¥${fmtCents(win)}</span>`
+      : `<span class="num">赢 ¥${fmtCents(win)}</span>
+         <span class="num">输 ¥${fmtCents(loss)}</span>
+         <span class="num sum-gap">差 ¥${fmtCents(Math.abs(win - loss))} 未平</span>`);
 
   const pendingTip = pending
     ? `<span class="pending-tip">${pending} 人未结算</span>`
@@ -2008,32 +2254,23 @@ function saveGame() {
 
   // 本局买入（一手金额），整数分。留空 / 填 0 → 存 0（等价于不自动记买入）。
   const rawDefault = parseCents(document.getElementById('inBuyDefault').value);
-  const buyDefault = Number.isFinite(rawDefault) && rawDefault > 0 ? rawDefault : 0;
-
-  if (editGameId) {
-    const g = l.games.find(x => x.id === editGameId);
-    if (g) {
-      g.date = date;
-      g.buyDefault = buyDefault;
-      g.entries = stored;
-      g.updatedAt = new Date().toISOString();
+  if (!Number.isSafeInteger(rawDefault) || rawDefault < 0) { toast('本局买入金额无效'); return; }
+  const buyDefault = rawDefault;
+  const editing = editGameId;
+  if (editing && !l.games.some(g => g.id === editing)) { toast('这场牌局已不存在'); return; }
+  if (!changeState((state, target) => {
+    if (editing) {
+      const g = target.games.find(g => g.id === editing);
+      Object.assign(g, { date, buyDefault, entries: stored, updatedAt: new Date().toISOString() });
+    } else {
+      target.games.push({ id: uid(), date, buyDefault, entries: stored,
+        createdAt: new Date().toISOString(), _open: true });
     }
-    toast('已更新');
-  } else {
-    l.games.push({
-      id: uid(),
-      date,
-      buyDefault,
-      entries: stored,
-      createdAt: new Date().toISOString(),
-      _open: true,
-    });
-    toast('已保存');
-  }
+  })) return;
 
   editGameId = null;
   rows = [];
-  touchLedger();
+  toast(editing ? '已更新' : '已保存');
 
   // ★ 保存后把「牌局记录」展开并定位过去。
   //   它默认是收起的 —— 刚记完一场却看不到自己刚记的东西，
@@ -2054,7 +2291,7 @@ function renderPlayers() {
     return;
   }
   box.innerHTML = l.players.map(p =>
-    `<span class="ptag">${esc(p.name)}<button class="x" data-rmp="${p.id}" title="删除">×</button></span>`
+    `<span class="ptag">${esc(p.name)}<button class="x" data-rmp="${esc(p.id)}" title="删除">×</button></span>`
   ).join('');
 }
 
@@ -2070,8 +2307,7 @@ function createPlayer(rawName) {
   if (l.players.some(p => p.name === name)) { toast('人员已存在'); return null; }
 
   const p = { id: uid(), name, createdAt: new Date().toISOString() };
-  l.players.push(p);
-  touchLedger();
+  if (!changeState((state, target) => target.players.push(p))) return null;
   renderPlayers();   // 人员管理的标签列表要同步（两条新建路径都走这里）
   return p;
 }
@@ -2112,8 +2348,7 @@ function removePlayer(id) {
     : `删除「${p.name}」？`;
   if (!confirm(msg)) return;
 
-  l.players = l.players.filter(x => x.id !== id);
-  touchLedger();
+  if (!changeState((state, target) => { target.players = target.players.filter(x => x.id !== id); })) return;
   renderPlayers();
   render();
   toast('已删除');
@@ -2129,7 +2364,7 @@ function renderLedgers() {
     const d = new Date(l.updatedAt);
     const p = n => String(n).padStart(2, '0');
     const meta = `${l.games.length} 场 · ${people} 人 · 更新于 ${d.getMonth() + 1}/${p(d.getDate())}`;
-    return `<div class="litem${l.id === currentId ? ' current' : ''}" data-ledger="${l.id}">
+    return `<div class="litem${l.id === currentId ? ' current' : ''}" data-ledger="${esc(l.id)}">
       <div class="litem-main">
         <div class="litem-name">${esc(l.name)}</div>
         <div class="litem-meta num">${meta}</div>
@@ -2149,9 +2384,7 @@ function newLedger() {
   if (db.ledgers.some(l => l.name === trimmed)) { toast('账本名称重复'); return; }
 
   const l = blankLedger(trimmed);
-  db.ledgers.push(l);
-  currentId = l.id;
-  save();
+  if (!changeState(state => { state.ledgers.push(l); state.currentId = l.id; }, false)) return;
   render();
   renderLedgers();
   toast('已创建');
@@ -2163,9 +2396,10 @@ function delLedger() {
   if (db.ledgers.length <= 1) { toast('至少保留一个账本'); return; }
   if (!confirm(`删除账本「${l.name}」？\n该账本下 ${l.games.length} 场牌局和 ${l.players.length} 位人员会一起删除，且无法恢复。`)) return;
 
-  db.ledgers = db.ledgers.filter(x => x.id !== currentId);
-  currentId = db.ledgers[0].id;
-  save();
+  if (!changeState(state => {
+    state.ledgers = state.ledgers.filter(x => x.id !== state.currentId);
+    state.currentId = state.ledgers[0].id;
+  }, false)) return;
   render();
   renderLedgers();
   toast('已删除');
@@ -2196,9 +2430,9 @@ function importData(file) {
   reader.onload = () => {
     let parsed;
     try {
-      parsed = JSON.parse(String(reader.result));
+      parsed = validateState(JSON.parse(String(reader.result)));
     } catch (e) {
-      toast('文件格式不对，无法解析');
+      toast('文件格式或数据结构无效，当前数据未改变');
       return;
     }
     if (!parsed || !Array.isArray(parsed.ledgers) || parsed.ledgers.length === 0) {
@@ -2208,17 +2442,7 @@ function importData(file) {
     const games = parsed.ledgers.reduce((s, l) => s + (l.games ? l.games.length : 0), 0);
     if (!confirm(`即将恢复 ${parsed.ledgers.length} 个账本、${games} 场牌局。\n\n当前设备上的全部数据会被覆盖，确定继续？`)) return;
 
-    parsed.ledgers.forEach(l => {
-      l.players = Array.isArray(l.players) ? l.players : [];
-      l.games = Array.isArray(l.games) ? l.games : [];
-    });
-    if (!parsed.ledgers.some(l => l.id === parsed.currentId)) {
-      parsed.currentId = parsed.ledgers[0].id;
-    }
-
-    db = parsed;
-    currentId = db.currentId;
-    save();
+    if (!save(parsed, true)) return;
     closeSheet('ovData');
     render();
     toast('恢复完成');
@@ -2231,8 +2455,7 @@ function clearGames() {
   const l = ledger();
   if (!l || !l.games.length) { toast('当前账本没有牌局记录'); return; }
   if (!confirm(`清空「${l.name}」下的全部 ${l.games.length} 场牌局记录？\n\n人员会保留，此操作无法撤销。`)) return;
-  l.games = [];
-  touchLedger();
+  if (!changeState((state, target) => { target.games = []; })) return;
   closeSheet('ovData');
   render();
   toast('已清空');
@@ -2260,18 +2483,25 @@ function openSheet(id) {
  *   按一下 Esc、或者误碰右上角 ×，closeSheet 就会把 rows 重置掉 —— 刚才敲的
  *   买入/结余凭空消失，几十秒的输入白费，而且没有任何提示。所以关之前必须问一句。
  *
- * 只在「有实际输入」时才提示：
- *   - rows 为空 / 每一行都是空的 → 关了不亏，直接关
- *   - 只是打开面板看了眼 → 直接关
+ * 只在相对于打开时的快照确实发生变化时提示，包括删光人员、修改日期与默认买入。
+ * 展开买入明细等纯 UI 状态不算修改。
  */
-function sheetHasUnsavedInput() {
-  if (!rows.length) return false;
-  return rows.some(r => {
-    const typed = String(r._buyText === undefined ? '' : r._buyText).trim();
-    const val = String(r.value === undefined || r.value === null ? '' : r.value).trim();
-    const extraBuys = (r.buys || []).length > 0;
-    return typed !== '' || val !== '' || extraBuys;
+function canonicalSheetState() {
+  const rowState = rows.map(r => ({
+    id: r.playerId || '',
+    buys: (r.buys || []).slice(),
+    pending: r._buyText === undefined ? '' : String(r._buyText).trim(),
+    value: r.value === undefined || r.value === null ? '' : String(r.value).trim(),
+  }));
+  return JSON.stringify({
+    date: document.getElementById('inDate').value || '',
+    buyDefault: document.getElementById('inBuyDefault').value.trim(),
+    rows: rowState,
   });
+}
+
+function sheetHasUnsavedInput() {
+  return sheetSnapshot !== null && canonicalSheetState() !== sheetSnapshot;
 }
 
 /**
@@ -2289,6 +2519,11 @@ function closeSheet(id, force) {
     }
   }
   document.getElementById(id).classList.remove('show');
+  if (id === 'ovGame') {
+    sheetSnapshot = null;
+    rows = [];
+    editGameId = null;
+  }
   if (!document.querySelector('.overlay.show')) document.body.style.overflow = '';
   return true;
 }
@@ -2308,12 +2543,20 @@ function toast(msg, ms) {
 document.getElementById('btnAddGame').onclick = () => openGameSheet(null);
 document.getElementById('btnSaveGame').onclick = saveGame;
 
-document.getElementById('btnPlayers').onclick = () => {
+function openPlayersSheet() {
   renderPlayers();
   document.getElementById('inPlayerName').value = '';
   openSheet('ovPlayers');
-};
+}
+
+document.getElementById('btnPlayers').onclick = openPlayersSheet;
 document.getElementById('btnAddPlayer').onclick = addPlayer;
+
+// 空状态里的「+ 添加人员」：底栏按钮和空态按钮共用同一个打开逻辑
+document.addEventListener('click', e => {
+  const cta = e.target.closest('[data-act="addPlayer"]');
+  if (cta) { openPlayersSheet(); }
+});
 
 document.getElementById('btnLedgers').onclick = () => { renderLedgers(); openSheet('ovLedgers'); };
 document.getElementById('btnNewLedger').onclick = newLedger;
@@ -2377,8 +2620,9 @@ document.getElementById('headGames').onclick = () => toggleSection('secGames', '
 function exportCsv() {
   const l = ledger();
   const q = s => {
-    const v = String(s === null || s === undefined ? '' : s);
-    return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+    let v = String(s === null || s === undefined ? '' : s);
+    if (/^[\s\u0000-\u001f]*[=+\-@]/.test(v)) v = "'" + v;
+    return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   };
   const head = ['日期', '人员', '买入', '总买入', '结余', '净盈亏'];
   const lines = [head.join(',')];
@@ -2386,12 +2630,12 @@ function exportCsv() {
     const entries = entriesOf(g);
     for (const e of entries) {
       lines.push([
-        g.date,
+        q(g.date),
         q(e.playerName),
-        q(fmtCents(e.buys[0] || 0) + (e.buys.length > 1 ? ` +${e.buys.length - 1}笔` : '')),
+        q(e.buys.length ? fmtCents(e.buys[0]) + (e.buys.length > 1 ? ` +${e.buys.length - 1}笔` : '') : ''),
         fmtCents(e.totalBuy),
-        fmtCents(e.balance),
-        fmtCents(e.netProfit),
+        e.balance === null ? '' : fmtCents(e.balance),
+        e.netProfit === null ? '' : fmtCents(e.netProfit),
       ].join(','));
     }
   }
@@ -2425,8 +2669,7 @@ document.getElementById('fileImport').onchange = e => {
 document.getElementById('btnClearGames').onclick = clearGames;
 
 document.getElementById('ledgerSelect').onchange = e => {
-  currentId = e.target.value;
-  save();
+  selectLedger(e.target.value);
   render();
 };
 
@@ -2455,8 +2698,7 @@ document.getElementById('llist').addEventListener('click', e => {
   if (e.target.id === 'btnDelLedger') { delLedger(); return; }
   const item = e.target.closest('[data-ledger]');
   if (item) {
-    currentId = item.dataset.ledger;
-    save();
+    if (!selectLedger(item.dataset.ledger)) { renderLedgers(); return; }
     render();
     renderLedgers();
     closeSheet('ovLedgers');
@@ -2490,18 +2732,23 @@ document.getElementById('btnAddPlayerThenPick').onclick = addPlayerThenPick;
 document.getElementById('gameList').addEventListener('click', e => {
   const del = e.target.closest('[data-del]');
   if (del) {
+    e.stopPropagation();
     const g = ledger().games.find(x => x.id === del.dataset.del);
-    if (g && confirm(`删除 ${g.date} 这场牌局？\n\n此操作无法撤销。`)) {
-      const l = ledger();
-      l.games = l.games.filter(x => x.id !== del.dataset.del);
-      touchLedger();
+    // 二次确认：把「会丢什么」写进确认文案（日期、人数、盈亏），
+    // 而不是只问一句「确定吗」。用户扫一眼就知道自己在删哪一场。
+    if (g) {
+      const st = gameStats(g);
+      const detail = `${g.date} 这场，共 ${entriesOf(g).length} 人`
+        + (st.pending ? `，${st.pending} 人未结算` : `，流水 ¥${fmtCents(st.flow)}`);
+      if (!confirm(`删除牌局\n\n${detail}\n\n删除后无法撤销，确定继续吗？`)) return;
+      if (!changeState((state, target) => { target.games = target.games.filter(x => x.id !== del.dataset.del); })) return;
       render();
       toast('已删除');
     }
     return;
   }
   const ed = e.target.closest('[data-edit]');
-  if (ed) { openGameSheet(ed.dataset.edit); return; }
+  if (ed) { e.stopPropagation(); openGameSheet(ed.dataset.edit); return; }
 
   const tg = e.target.closest('[data-toggle]');
   if (tg) {
@@ -2644,7 +2891,7 @@ function renderPickList() {
     const on = used.has(p.id);
     const sel = pickSel.includes(p.id);
     return `<button class="pick${sel ? ' on' : ''}" ${on ? 'disabled' : ''}
-                    data-pick="${on ? '' : p.id}">
+                    data-pick="${on ? '' : esc(p.id)}">
       <span class="pick-left">
         <span class="pick-box">${sel ? '✓' : ''}</span>
         <span>${esc(p.name)}</span>
