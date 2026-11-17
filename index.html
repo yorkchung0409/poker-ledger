@@ -209,17 +209,20 @@
   .game { margin-bottom: 10px; overflow: hidden; }
   .game-head {
     display: flex; align-items: center; justify-content: space-between;
-    gap: 10px; padding: 13px 14px; cursor: pointer; user-select: none;
+    flex-wrap: wrap; gap: 6px 10px; padding: 13px 14px; cursor: pointer; user-select: none;
   }
   .game-head:active { background: var(--primary-softer); }
-  .game-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  /* ★ 左组不参与收缩：320px 下日期+人数其实装不下，原来被压成 47px 宽，
+     里面的 chip 直接画到「流水」文字上（视觉重叠，scrollWidth 还查不出来）。
+     现在让整行换行：装不下时右组（流水/箭头/编辑/删除）整体掉到第二行。 */
+  .game-left { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
   .game-date { font-size: 15px; font-weight: 600; white-space: nowrap; }
   .chip {
     font-size: 11px; padding: 1.5px 7px; border-radius: 20px;
     background: var(--surface); color: var(--muted); white-space: nowrap; flex-shrink: 0;
   }
   .chip.bad { background: rgba(255,92,92,0.14); color: var(--win); }
-  .game-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .game-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
   .game-flow { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
   .game-flow b { font-size: 14px; margin-left: 3px; }
   .caret { color: var(--faint); font-size: 11px; transition: transform 0.2s; }
@@ -248,8 +251,12 @@
      ★ 断点用 390px 而不是 380px：380 那一档已经承载「六列行宽预算」，
        两个 @media 380 会让样式表里出现两段同名断点，后续维护容易看错。 */
   @media (max-width: 390px) {
-    .op-btn { padding: 0 10px; font-size: 12px; }
-    .game-head { gap: 8px; padding: 11px 12px; }
+    .op-btn { padding: 0 9px; font-size: 12px; }
+    .game-head { gap: 6px 8px; padding: 11px 12px; }
+    /* 390px 是主流手机宽度：把右组间距和按钮内边距各收 1~2px，
+       让「日期+人数」和「流水+箭头+编辑/删除」还能挤在同一行；
+       再窄（如 320px）才整体换到第二行。 */
+    .game-right { gap: 6px; }
     .game-flow { font-size: 12px; }
   }
 
@@ -274,8 +281,13 @@
   }
 
   .balance-row {
-    display: flex; align-items: center; justify-content: flex-end;
-    gap: 12px; margin-top: 9px; font-size: 12px; color: var(--muted);
+    display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap;
+    gap: 4px 12px; margin-top: 9px; font-size: 12px; color: var(--muted);
+  }
+  /* 抽水是系统项，不是玩家：压暗一档 + 虚线分隔，避免被当成「赢了水钱的人」 */
+  table.detail tr.system-row td {
+    color: var(--muted); font-size: 12.5px;
+    border-top: 1px dashed var(--line); padding-top: 8px;
   }
 
   /* 空状态 */
@@ -920,6 +932,14 @@
 
       <button class="btn btn-ghost btn-sm btn-block" id="btnAddRow">+ 选择人员上场</button>
 
+      <div class="field">
+        <label class="label" for="inRake">抽水</label>
+        <input class="input num" type="text" id="inRake" inputmode="decimal"
+               placeholder="如 10，留空按 0 计"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">
+        <div class="field-hint">本局水钱，留空按 0 计。折扣 = 抽水 ÷ 输的流水。</div>
+      </div>
+
       <!-- ★ 提示条放在「说明文字」前面。
            它是**动态的**（每改一个数字就变），说明文字是**静态的**（看一次就够）。
            以前它在说明后面，被那一大段顶出滚动窗口 ——
@@ -928,6 +948,7 @@
       <div class="calc-hint" id="calcHint"></div>
 
       <div class="note">
+        <b>抽水</b> = 本局固定系统角色收取的水钱；配平按「赢方合计 + 抽水 = 输方合计」。<br>
         <b>买入</b> = 往牌桌上放的本金（上桌带的钱、中途再加的筹码，都是买入，性质完全一样）。
         每次填新金额后按 <b>回车</b> 或点 <b>+</b>，就记一笔进明细 —— <b>结余不受影响</b>，
         所以「这些钱是本金」这件事不会被算成输赢。<br>
@@ -1242,6 +1263,7 @@ function validateState(input) {
       need(typeof g.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(g.date)
         && Number.isFinite(Date.parse(g.date)) && new Date(g.date).toISOString().slice(0, 10) === g.date, '牌局日期无效');
       if (g.buyDefault !== undefined) { money(g.buyDefault); need(g.buyDefault >= 0, '默认买入不能为负'); }
+      if (g.rake !== undefined) { money(g.rake); need(g.rake >= 0, '抽水不能为负'); }
       const seen = new Set();
       const entries = array(g.entries, '牌局明细').map(e => {
         need(obj(e) && id(e.playerId) && !seen.has(e.playerId), '明细人员 ID 无效或重复');
@@ -1264,7 +1286,7 @@ function validateState(input) {
         const p = cleanPlayers.find(p => p.id === e.playerId);
         return { playerId: e.playerId, playerName: text(e.playerName, p ? p.name : '（未命名）'), buys, balance };
       });
-      return { id: g.id, date: g.date, buyDefault: g.buyDefault || 0, entries,
+      return { id: g.id, date: g.date, buyDefault: g.buyDefault || 0, rake: g.rake === undefined ? 0 : g.rake, entries,
         createdAt: text(g.createdAt, ''), updatedAt: text(g.updatedAt, ''), ...(g._open === true ? { _open: true } : {}) };
     });
     return { id: l.id, name: text(l.name, '（未命名账本）'), players: cleanPlayers, games: cleanGames,
@@ -1480,7 +1502,10 @@ function gameStats(g) {
     if (e.netProfit > 0) win += e.netProfit;
     else if (e.netProfit < 0) loss += -e.netProfit;
   }
-  return { win, loss, pending, flow: win, diff: win - loss, balanced: pending === 0 && win === loss };
+  const rake = Number.isSafeInteger(g.rake) && g.rake >= 0 ? g.rake : 0;
+  const balanced = pending === 0 && win + rake === loss;
+  const discount = loss > 0 ? rake / loss * 100 : null;
+  return { win, loss, rake, discount, pending, flow: loss, diff: win + rake - loss, balanced };
 }
 
 function sortedGames() {
@@ -1719,7 +1744,7 @@ function renderGames() {
           ${st.pending ? `<span class="chip">${st.pending}人未结算</span>` : (st.balanced ? '' : '<span class="chip bad">未平</span>')}
         </div>
         <div class="game-right">
-          <span class="game-flow">${st.pending ? '状态' : '流水'}<b class="num" style="color:${st.pending ? 'var(--muted)' : (st.balanced ? 'var(--text)' : 'var(--win)')}" >${st.pending ? '未结算' : `¥${fmtCompact(st.flow)}`}</b></span>
+          <span class="game-flow">${st.pending ? '状态' : (st.rake > 0 ? '输的流水' : '流水')}<b class="num" style="color:${st.pending ? 'var(--muted)' : (st.balanced ? 'var(--text)' : 'var(--win)')}" >${st.pending ? '未结算' : `¥${fmtCompact(st.flow)}`}</b></span>
           <span class="caret${isOpen ? ' open' : ''}">▼</span>
           <!-- 编辑/删除提到卡片右上角：收起时也能直接操作，
                不必先展开明细再找工具栏。点按钮不会触发折叠（事件委托里已 return）。 -->
@@ -1753,11 +1778,19 @@ function renderGames() {
                 <td class="r num cell-net" style="color:${c}">${e.netProfit === null ? '未结算' : fmtSignedYuan(e.netProfit)}</td>
               </tr>`;
             }).join('')}
+            ${st.rake > 0 ? `<tr class="system-row">
+              <td>抽水（系统）</td>
+              <td class="r num">—</td>
+              <td class="r num">—</td>
+              <td class="r num">+${fmtCompact(st.rake)}</td>
+            </tr>` : ''}
           </tbody>
         </table>
         <div class="balance-row num">
           <span>赢 ¥${fmtCents(st.win)}</span>
-          <span>输 ¥${fmtCents(st.loss)}</span>
+          <span>${st.rake > 0 ? '输的流水' : '输'} ¥${fmtCents(st.loss)}</span>
+          ${st.rake > 0 ? `<span>抽水 ¥${fmtCents(st.rake)}</span>
+          <span>折扣 ${st.discount === null ? '—' : `${st.discount.toFixed(2)}%${st.pending ? '（已结算部分）' : ''}`}</span>` : ''}
           <span style="color:${st.pending ? 'var(--faint)' : (st.balanced ? 'var(--lose)' : 'var(--win)')}"${st.pending ? ' class="pending-tip"' : ''}>
             ${st.pending ? `${st.pending} 人未结算` : (st.balanced ? '已平衡' : `差 ¥${fmtCents(Math.abs(st.diff))} 未平`)}
           </span>
@@ -1790,6 +1823,8 @@ function openGameSheet(gameId) {
   // ★ buyDefault=0 与「没填」语义相同（都表示不自动记买入），所以这里可以直接用真值判断。
   document.getElementById('inBuyDefault').value =
     g && Number.isFinite(g.buyDefault) && g.buyDefault > 0 ? String(g.buyDefault / 100) : '';
+  document.getElementById('inRake').value =
+    g && Number.isFinite(g.rake) && g.rake > 0 ? String(g.rake / 100) : '';
 
   rows = g
     ? entriesOf(g).map(e => ({
@@ -2134,6 +2169,13 @@ function computeEntries() {
 function updateCalc() {
   const box = document.getElementById('calcHint');
   const res = computeEntries();
+  const rakeText = document.getElementById('inRake').value;
+  const rake = parseCents(rakeText);
+  if (Number.isNaN(rake) || rake < 0) {
+    box.className = 'calc-hint bad';
+    box.innerHTML = `<span>${Number.isNaN(rake) ? '抽水金额格式有误（最多两位小数）' : '抽水不能为负'}</span>`;
+    return false;
+  }
 
   if (res.error) {
     box.className = 'calc-hint bad';
@@ -2143,7 +2185,7 @@ function updateCalc() {
   if (res.entries.length === 0) {
     box.className = 'calc-hint';
     // 措辞：账本里有人员 ≠ 有人上场。新牌局从 0 行开始，这里说的是「场上」没人
-    box.innerHTML = `<span>${ledger().players.length ? '还没有人上场' : '还没有人员'}</span>`;
+    box.innerHTML = `<span>${ledger().players.length ? '还没有人上场' : '还没有人员'}</span>${rake > 0 ? `<span class="num">抽水 ¥${fmtCents(rake)}</span>` : ''}`;
     return true;
   }
 
@@ -2155,7 +2197,9 @@ function updateCalc() {
     if (e.netProfit > 0) win += e.netProfit;
     else if (e.netProfit < 0) loss += -e.netProfit;
   }
-  const balanced = pending === 0 && win === loss;
+  const lossFlow = loss;
+  const discount = lossFlow > 0 ? rake / lossFlow * 100 : null;
+  const balanced = pending === 0 && win + rake === loss;
 
   // 区分两种情况：
   // - 账目不平：数据本身合法，只是还没输完/算错，允许保存但用橙色提醒
@@ -2168,23 +2212,46 @@ function updateCalc() {
   // 得自己在脑子里对两个数。把基数摊开，方向与差距同时可见。
   //
   // 平衡时保持原样（只有一个「流水」总额，没有两侧可分）。
+  const discountText = discount === null
+    ? '—'
+    : `${discount.toFixed(2)}%${pending ? '（已结算部分）' : ''}`;
+  const balanceDiff = win + rake - loss;
+  // 没抽水时保持 v28 的原始显示（已平衡 · 流水 ¥X），
+  // 不额外摆一排「抽水 ¥0.00 · 折扣 0.00%」——旧牌局没记过抽水，
+  // 那个 0 是「没记录」而不是「确认没抽水」，不该伪装成测量结果。
+  const rakeBits = rake > 0
+    ? `<span class="num">抽水 ¥${fmtCents(rake)} · 折扣 ${discountText}</span>`
+    : '';
   const flow = pending
     ? `<span class="num">赢 ¥${fmtCents(win)}</span>
-       <span class="num">输 ¥${fmtCents(loss)}</span>
-       ${win !== loss ? `<span class="num sum-gap">差 ¥${fmtCents(Math.abs(win - loss))} 未平（已结算部分）</span>` : ''}`
+       ${rake > 0 ? `<span class="num">输的流水 ¥${fmtCents(lossFlow)}</span>` : `<span class="num">输 ¥${fmtCents(lossFlow)}</span>`}
+       ${rakeBits}
+       ${balanceDiff !== 0 ? `<span class="num sum-gap">差 ¥${fmtCents(Math.abs(balanceDiff))} 未平（已结算部分）</span>` : ''}`
     : (balanced
-      ? `<span class="num">已平衡 · 流水 ¥${fmtCents(win)}</span>`
+      ? (rake > 0
+        ? `<span class="num">已平衡 · 赢 ¥${fmtCents(win)} + 抽水 ¥${fmtCents(rake)} = 输 ¥${fmtCents(lossFlow)}</span>
+           <span class="num">折扣 ${discountText}</span>`
+        : `<span class="num">已平衡 · 流水 ¥${fmtCents(win)}</span>`)
       : `<span class="num">赢 ¥${fmtCents(win)}</span>
-         <span class="num">输 ¥${fmtCents(loss)}</span>
-         <span class="num sum-gap">差 ¥${fmtCents(Math.abs(win - loss))} 未平</span>`);
+         ${rake > 0 ? `<span class="num">输的流水 ¥${fmtCents(lossFlow)}</span>` : `<span class="num">输 ¥${fmtCents(lossFlow)}</span>`}
+         ${rakeBits}
+         <span class="num sum-gap">差 ¥${fmtCents(Math.abs(balanceDiff))} 未平</span>`);
 
   const pendingTip = pending
     ? `<span class="pending-tip">${pending} 人未结算</span>`
     : '';
+  // 输比赢多、又没填抽水：大概率就是漏填水钱，直接点出来，
+  // 比只显示「差 ¥100 未平」更接近真正要做的动作。
+  const rakeTip = rake > 0 && lossFlow === 0
+    ? '<span class="pending-tip">抽水大于 0，但输的流水为 0，折扣无法计算</span>'
+    : (rake === 0 && pending === 0 && balanceDiff < 0
+      ? '<span class="pending-tip">差额可能来自抽水，若本局有抽水请填写金额</span>'
+      : '');
 
   box.innerHTML = `
     ${flow}
-    ${pendingTip}`;
+    ${pendingTip}
+    ${rakeTip}`;
   return true;
 }
 
@@ -2223,15 +2290,22 @@ function saveGame() {
     document.getElementById('inBuyDefault').focus();
     return;
   }
+  const rawRake = parseCents(document.getElementById('inRake').value);
+  if (!Number.isSafeInteger(rawRake) || rawRake < 0) {
+    toast(Number.isNaN(rawRake) ? '抽水金额格式有误（最多两位小数）' : '抽水不能为负');
+    document.getElementById('inRake').focus();
+    return;
+  }
   const buyDefault = rawDefault;
+  const rake = rawRake;
   const editing = editGameId;
   if (editing && !l.games.some(g => g.id === editing)) { toast('这场牌局已不存在'); return; }
   if (!changeState((state, target) => {
     if (editing) {
       const g = target.games.find(g => g.id === editing);
-      Object.assign(g, { date, buyDefault, entries: stored, updatedAt: new Date().toISOString() });
+      Object.assign(g, { date, buyDefault, rake, entries: stored, updatedAt: new Date().toISOString() });
     } else {
-      target.games.push({ id: uid(), date, buyDefault, entries: stored,
+      target.games.push({ id: uid(), date, buyDefault, rake, entries: stored,
         createdAt: new Date().toISOString(), _open: true });
     }
   })) return;
@@ -2459,6 +2533,7 @@ function canonicalSheetState() {
   return JSON.stringify({
     date: document.getElementById('inDate').value || '',
     buyDefault: document.getElementById('inBuyDefault').value.trim(),
+    rake: document.getElementById('inRake').value.trim(),
     rows: rowState,
   });
 }
@@ -2587,10 +2662,12 @@ function exportCsv() {
     if (/^[\s\u0000-\u001f]*[=+\-@]/.test(v)) v = "'" + v;
     return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   };
-  const head = ['日期', '人员', '买入', '总买入', '结余', '净盈亏'];
+  const head = ['日期', '人员', '买入', '总买入', '结余', '净盈亏', '本局抽水', '输的流水', '折扣'];
   const lines = [head.join(',')];
   for (const g of l.games) {
     const entries = entriesOf(g);
+    const st = gameStats(g);
+    const discount = st.rake === 0 || st.discount === null || st.pending ? '' : st.discount.toFixed(2) + '%';
     for (const e of entries) {
       lines.push([
         q(g.date),
@@ -2599,6 +2676,9 @@ function exportCsv() {
         fmtCents(e.totalBuy),
         e.balance === null ? '' : fmtCents(e.balance),
         e.netProfit === null ? '' : fmtCents(e.netProfit),
+        fmtCents(st.rake),
+        fmtCents(st.loss),
+        discount,
       ].join(','));
     }
   }
@@ -2724,6 +2804,8 @@ document.getElementById('gameList').addEventListener('click', e => {
 // 录入行：选择人员 / 填买入 / 填结余 / 删除行
 // 「买入」格暂存待提交金额（_buyText），回车或点 + 才追加成明细
 const NUMERIC_FIELDS = ['buy', 'value'];
+
+document.getElementById('inRake').addEventListener('input', updateCalc);
 
 document.getElementById('rowZone').addEventListener('input', e => {
   const i = e.target.dataset.i;

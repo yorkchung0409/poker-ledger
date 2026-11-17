@@ -385,6 +385,23 @@ section('B. 金额精确性与零和核算（纯函数）');
   const st = gameStats(withPending);
   eq([st.balanced, st.pending, st.diff].join(','), 'false,1,0',
      '★ 已结算部分抵消但有人未结算 → 不平衡 + 标出 1 人未结算（不能当作已平衡）');
+
+  const withRake = { entries: [
+    { buys: [10000], balance: 30000 },
+    { buys: [10000], balance: 0 },
+  ], rake: 1000 };
+  const rakeStats = gameStats(withRake);
+  eq([rakeStats.win, rakeStats.loss, rakeStats.rake, rakeStats.flow, rakeStats.balanced].join(','),
+     '20000,10000,1000,10000,false', '★ 抽水不计入输的流水，流水取真实玩家负盈亏绝对值之和');
+  const balancedRake = { entries: [
+    { buys: [10000], balance: 30000 },
+    { buys: [10000], balance: -11000 },
+  ], rake: 1000 };
+  const balancedRakeStats = gameStats(balancedRake);
+  eq([balancedRakeStats.win + balancedRakeStats.rake, balancedRakeStats.loss, balancedRakeStats.discount, balancedRakeStats.balanced].join(','),
+     '21000,21000,4.761904761904762,true', '★ 配平条件为赢方合计 + 抽水 = 输方合计，折扣按输的流水计算');
+  eq([gameStats({ entries: [], rake: 0 }).rake, gameStats({ entries: [] }).rake].join(','), '0,0',
+     '★ 旧牌局缺少 rake 按 0 兼容，且不猜历史抽水');
 }
 
 section('C. 买入明细归一化与旧数据迁移（纯函数）');
@@ -837,7 +854,10 @@ section('J. 未结算与「真实 0」的区分');
   reloaded.click(reloaded.$('btnExportCsv'));
   csv.restore();
   ok(csv.get().text.replace(/^﻿/, '').split('\r\n')
-      .some(r => r.startsWith('2099-01-01,未知,') && r.endsWith(',,')),
+      .some(r => {
+        const c = r.split(',');
+        return c[0] === '2099-01-01' && c[1] === '未知' && c[4] === '' && c[5] === '';
+      }),
      '★ 未知结余导出 CSV 时结余与净盈亏为空');
   reloaded.close();
   t3.close();
@@ -912,7 +932,7 @@ section('L. 持久化、导出与损坏数据回退');
   const csvText = csv.get().text;
   ok(/text\/csv/.test(csv.get().opts.type) && /\.csv$/.test(name || ''), '★ 导出的是 CSV 文件');
   eq([csvText.charCodeAt(0) === 0xFEFF, csvText.replace(/^﻿/, '').split('\r\n')[0]].join(','),
-     'true,日期,人员,买入,总买入,结余,净盈亏', '★ CSV 带 UTF-8 BOM（否则 Excel 中文乱码）且表头正确');
+     'true,日期,人员,买入,总买入,结余,净盈亏,本局抽水,输的流水,折扣', '★ CSV 带 UTF-8 BOM（否则 Excel 中文乱码）且表头正确');
   {
     const cells = csvText.replace(/^﻿/, '').split('\r\n')[1].split(',');
     ok(/^\d+\.\d\d$/.test(cells[3]) && /^-?\d+\.\d\d$/.test(cells[5]) && !/¥/.test(csvText),
@@ -1323,6 +1343,8 @@ section('R. 导入校验与导入前快照');
     ['非法日期', { ...base, ledgers: [{ ...base.ledgers[0], games: [{ id: 'g', date: '2026-02-30', entries: [] }] }] }],
     ['非法金额', { ...base, ledgers: [{ ...base.ledgers[0], games: [{ id: 'g', date: '2026-01-01', entries: [{ playerId: 'p', buys: [1.5], balance: 0 }] }] }] }],
     ['不安全金额', { ...base, ledgers: [{ ...base.ledgers[0], games: [{ id: 'g', date: '2026-01-01', entries: [{ playerId: 'p', buys: [Number.MAX_SAFE_INTEGER], balance: 0 }] }] }] }],
+    ['负数抽水', { ...base, ledgers: [{ ...base.ledgers[0], games: [{ id: 'g', date: '2026-01-01', rake: -1, entries: [] }] }] }],
+    ['非整数抽水', { ...base, ledgers: [{ ...base.ledgers[0], games: [{ id: 'g', date: '2026-01-01', rake: 1.5, entries: [] }] }] }],
     ['不支持版本', { ...base, version: 2 }],
   ];
   const rejected = [];
@@ -1505,6 +1527,110 @@ section('U. 渲染健壮性：转义 / 缺失字段 / 历史姓名快照');
   ok(t4.$('ovGame').classList.contains('show'), '取消丢弃删行修改后面板保持打开');
   checkFailureUnchanged(t4, beforeDeleteClose, '取消丢弃删行修改');
   t4.close();
+}
+
+section('V. 本局抽水：系统角色 / 折扣 / 配平 / 兼容');
+{
+  const t = boot();
+  t.addPlayers(['老王', '小李']);
+  t.click(t.$('btnAddGame'));
+  t.pickPlayers(['老王', '小李']);
+
+  // 老王 +100（买 200 结 300），小李 -150（买 200 结 50）
+  t.fill(t.prows()[0], { buy: '200', value: '300' });
+  t.fill(t.prows()[1], { buy: '200', value: '50' });
+  eq([t.pfText(0), t.pfText(1)].join(','), '+100,-150', '抽水场景：玩家盈亏按结余−总买入');
+  ok(t.$('calcHint').textContent.includes('未平')
+     && t.$('calcHint').textContent.includes('抽水'), '★ 输大于赢且未填抽水时，提示差额可能来自抽水');
+
+  t.set(t.$('inRake'), '50');
+  ok(t.$('calcHint').textContent.includes('已平衡'), '★ 赢 100 + 抽水 50 = 输 150 → 已平衡');
+  ok(t.$('calcHint').textContent.includes('33.33%'), '★ 折扣 = 抽水 ÷ 输的流水 = 50/150 = 33.33%');
+
+  t.click(t.$('btnSaveGame'));
+  const g = t.raw().ledgers[0].games[0];
+  eq(g.rake, 5000, '★ 抽水以整数分落盘（¥50 → 5000）');
+  ok(t.$('gameList').textContent.includes('2人'), '★ 抽水不计入真实玩家人数');
+  ok(t.$('gameList').textContent.includes('抽水（系统）'), '★ 明细里抽水单独成系统行');
+  ok(t.$('gameList').textContent.includes('折扣 33.33%'), '★ 明细底部显示抽水折扣');
+  ok(!t.$('rankList').textContent.includes('抽水'), '★ 排行榜不出现抽水角色');
+  eq(t.qa('.rank-row').length, 2, '★ 排行榜仍只有 2 位真实玩家');
+  eq([t.qa('.rank-row')[0].textContent.includes('老王'), t.qa('.rank-row')[0].textContent.includes('+100')].join(','),
+     'true,true', '★ 抽水不改变玩家个人盈亏（老王仍 +100，不按抽水摊薄）');
+
+  // 编辑回显 + 负数/非法拒绝 + dirty 覆盖抽水
+  t.win.openGameSheet(g.id);
+  eq(t.$('inRake').value, '50', '★ 编辑牌局回显抽水金额');
+  const beforeSave = t.seedRaw();
+  t.set(t.$('inRake'), '-10');
+  t.click(t.$('btnSaveGame'));
+  eq(t.seedRaw(), beforeSave, '★ 负数抽水拒绝保存，存档逐字节不变');
+  eq(t.doc.activeElement, t.$('inRake'), '★ 负数抽水聚焦抽水输入');
+  t.set(t.$('inRake'), 'abc');
+  t.click(t.$('btnSaveGame'));
+  eq(t.seedRaw(), beforeSave, '★ 非数字抽水拒绝保存，存档逐字节不变');
+  t.set(t.$('inRake'), '50');
+
+  let asked = 0;
+  t.win.confirm = () => { asked++; return false; };
+  t.set(t.$('inRake'), '60');
+  t.click(t.q('#ovGame [data-close="ovGame"]'));
+  eq(asked, 1, '★ 只改抽水也算未保存修改，关闭时确认');
+  ok(t.$('ovGame').classList.contains('show'), '取消丢弃抽水修改后面板保持打开');
+  t.win.confirm = () => true;
+  t.win.closeSheet('ovGame', true);
+
+  // CSV：逐玩家行带整局抽水字段
+  const csv = t.captureBlob();
+  t.click(t.$('btnData'));
+  t.click(t.$('btnExportCsv'));
+  csv.restore();
+  const lines = csv.get().text.replace(/^﻿/, '').split('\r\n');
+  eq(lines[0].split(',').slice(6).join(','), '本局抽水,输的流水,折扣', '★ CSV 增加抽水/输的流水/折扣三列');
+  const wang = lines.find(r => r.split(',')[0] === g.date && r.split(',')[1] === '老王');
+  eq(wang.split(',').slice(6).join(','), '50.00,150.00,33.33%',
+     '★ CSV 每行重复整局抽水、输的流水与折扣，金额保留两位小数');
+  t.close();
+}
+
+{
+  // 抽水 > 0 但没人输钱：折扣不可算，明确提示而不是显示 0%
+  const t = boot();
+  t.addPlayers(['甲', '乙']);
+  t.click(t.$('btnAddGame'));
+  t.pickPlayers(['甲', '乙']);
+  t.fill(t.prows()[0], { buy: '100', value: '200' });
+  t.fill(t.prows()[1], { buy: '100', value: '100' });
+  t.set(t.$('inRake'), '10');
+  ok(t.$('calcHint').textContent.includes('折扣 —'), '★ 输的流水为 0 时折扣显示 —');
+  ok(t.$('calcHint').textContent.includes('无法计算'), '★ 抽水大于 0 但无人输钱时明确提示无法计算');
+  ok(t.$('calcHint').textContent.includes('未平'), '★ 此时仍按未平处理，不伪装成已配平');
+  t.close();
+}
+
+{
+  // 旧牌局没有 rake 字段：按 0 兼容，不猜历史抽水
+  const seed = {
+    version: 1, currentId: 'L',
+    ledgers: [{
+      id: 'L', name: '旧账本',
+      players: [{ id: 'p1', name: '老王' }],
+      games: [{
+        id: 'g1', date: '2026-01-01',
+        entries: [{ playerId: 'p1', playerName: '老王', buys: [10000], balance: 20000 }],
+      }],
+    }],
+  };
+  const t = boot({ 'poker-ledger:v1': JSON.stringify(seed) });
+  eq(t.win.eval('gameStats(ledger().games[0]).rake'), 0, '★ 旧牌局缺少 rake 按 0，不猜历史抽水');
+  t.win.openGameSheet('g1');
+  eq(t.$('inRake').value, '', '★ 旧牌局编辑时抽水留空');
+  t.win.closeSheet('ovGame', true);
+  t.click(t.$('headGames'));
+  t.click(t.q('[data-toggle="g1"]'));
+  ok(!t.$('gameList').textContent.includes('抽水（系统）'), '★ 无抽水的老牌局不显示系统行');
+  ok(!t.$('gameList').textContent.includes('折扣'), '★ 无抽水的老牌局不显示 0% 折扣，避免把「没记录」伪装成测量结果');
+  t.close();
 }
 
 /* ===========================================================================
