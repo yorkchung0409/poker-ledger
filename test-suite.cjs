@@ -932,7 +932,7 @@ section('L. 持久化、导出与损坏数据回退');
   const csvText = csv.get().text;
   ok(/text\/csv/.test(csv.get().opts.type) && /\.csv$/.test(name || ''), '★ 导出的是 CSV 文件');
   eq([csvText.charCodeAt(0) === 0xFEFF, csvText.replace(/^﻿/, '').split('\r\n')[0]].join(','),
-     'true,日期,人员,买入,总买入,结余,净盈亏,本局抽水,输的流水,折扣', '★ CSV 带 UTF-8 BOM（否则 Excel 中文乱码）且表头正确');
+     'true,日期,人员,买入,总买入,结余,净盈亏,本局抽水,本局保险,输的流水,折扣', '★ CSV 带 UTF-8 BOM（否则 Excel 中文乱码）且表头正确');
   {
     const cells = csvText.replace(/^﻿/, '').split('\r\n')[1].split(',');
     ok(/^\d+\.\d\d$/.test(cells[3]) && /^-?\d+\.\d\d$/.test(cells[5]) && !/¥/.test(csvText),
@@ -1345,6 +1345,7 @@ section('R. 导入校验与导入前快照');
     ['不安全金额', { ...base, ledgers: [{ ...base.ledgers[0], games: [{ id: 'g', date: '2026-01-01', entries: [{ playerId: 'p', buys: [Number.MAX_SAFE_INTEGER], balance: 0 }] }] }] }],
     ['负数抽水', { ...base, ledgers: [{ ...base.ledgers[0], games: [{ id: 'g', date: '2026-01-01', rake: -1, entries: [] }] }] }],
     ['非整数抽水', { ...base, ledgers: [{ ...base.ledgers[0], games: [{ id: 'g', date: '2026-01-01', rake: 1.5, entries: [] }] }] }],
+    ['非整数保险', { ...base, ledgers: [{ ...base.ledgers[0], games: [{ id: 'g', date: '2026-01-01', insurance: 1.5, entries: [] }] }] }],
     ['不支持版本', { ...base, version: 2 }],
   ];
   const rejected = [];
@@ -1586,10 +1587,10 @@ section('V. 本局抽水：系统角色 / 折扣 / 配平 / 兼容');
   t.click(t.$('btnExportCsv'));
   csv.restore();
   const lines = csv.get().text.replace(/^﻿/, '').split('\r\n');
-  eq(lines[0].split(',').slice(6).join(','), '本局抽水,输的流水,折扣', '★ CSV 增加抽水/输的流水/折扣三列');
+  eq(lines[0].split(',').slice(6).join(','), '本局抽水,本局保险,输的流水,折扣', '★ CSV 增加抽水/保险/输的流水/折扣列');
   const wang = lines.find(r => r.split(',')[0] === g.date && r.split(',')[1] === '老王');
-  eq(wang.split(',').slice(6).join(','), '50.00,150.00,33.33%',
-     '★ CSV 每行重复整局抽水、输的流水与折扣，金额保留两位小数');
+  eq(wang.split(',').slice(6).join(','), '50.00,0.00,150.00,33.33%',
+     '★ CSV 每行重复整局抽水、保险、输的流水与折扣，金额保留两位小数');
   t.close();
 }
 
@@ -1630,6 +1631,115 @@ section('V. 本局抽水：系统角色 / 折扣 / 配平 / 兼容');
   t.click(t.q('[data-toggle="g1"]'));
   ok(!t.$('gameList').textContent.includes('抽水（系统）'), '★ 无抽水的老牌局不显示系统行');
   ok(!t.$('gameList').textContent.includes('折扣'), '★ 无抽水的老牌局不显示 0% 折扣，避免把「没记录」伪装成测量结果');
+  t.close();
+}
+
+section('W. 保险：正负净额 / 计入流水 / 配平 / 兼容');
+{
+  const t = boot();
+  t.addPlayers(['老王', '小李']);
+  t.click(t.$('btnAddGame'));
+  t.pickPlayers(['老王', '小李']);
+
+  // 老王 +200，小李 -150；抽水 50、保险赔 100 → 输的流水 250 = 赢 200 + 抽水 50
+  t.fill(t.prows()[0], { buy: '200', value: '400' });
+  t.fill(t.prows()[1], { buy: '200', value: '50' });
+  t.set(t.$('inRake'), '50');
+  ok(t.$('calcHint').textContent.includes('未平'), '保险未填时差 100 未平');
+
+  t.set(t.$('inInsurance'), '-100');
+  ok(t.$('calcHint').textContent.includes('已平衡'), '★ 保险赔 100 计入输方后配平');
+  ok(t.$('calcHint').textContent.includes('含保险'), '★ 提示里标明输的流水含保险');
+  ok(t.$('calcHint').textContent.includes('20.00%'), '★ 折扣分母按含保险的输的流水 250 计算（50/250）');
+
+  t.click(t.$('btnSaveGame'));
+  const g = t.raw().ledgers[0].games[0];
+  eq([g.rake, g.insurance].join(','), '5000,-10000', '★ 抽水与有符号保险分别以整数分落盘');
+  const text = t.$('gameList').textContent;
+  ok(text.includes('保险（系统）'), '★ 明细里保险单独成系统行');
+  ok(text.includes('折扣 20.00%'), '★ 明细折扣同步为 20%');
+  eq(t.qa('.rank-row').length, 2, '★ 保险不进排行榜人数');
+  ok(t.qa('.rank-row')[0].textContent.includes('+200'), '★ 保险不摊薄玩家个人盈亏');
+
+  // 编辑回显 + ± 切符号
+  t.win.openGameSheet(g.id);
+  eq(t.$('inInsurance').value, '-100', '★ 编辑回显保险净额（负数）');
+  t.set(t.$('inInsurance'), '100');
+  t.click(t.$('btnInsSign'));
+  eq(t.$('inInsurance').value, '-100', '★ ± 按钮把正数切成负数');
+  t.click(t.$('btnInsSign'));
+  eq(t.$('inInsurance').value, '100', '★ 再点一次切回正数');
+
+  // 非法金额拒绝
+  t.set(t.$('inRake'), '50');
+  const before = t.seedRaw();
+  t.set(t.$('inInsurance'), 'abc');
+  t.click(t.$('btnSaveGame'));
+  eq(t.seedRaw(), before, '★ 非法保险金额拒绝保存，存档逐字节不变');
+  eq(t.doc.activeElement, t.$('inInsurance'), '★ 聚焦保险输入');
+
+  // dirty 覆盖保险
+  let asked = 0;
+  t.win.confirm = () => { asked++; return false; };
+  t.set(t.$('inInsurance'), '150');
+  t.click(t.q('#ovGame [data-close="ovGame"]'));
+  eq(asked, 1, '★ 只改保险也算未保存修改，关闭时确认');
+  t.win.confirm = () => true;
+  t.win.closeSheet('ovGame', true);
+
+  // CSV：抽水与保险都按整局重复到每个玩家行
+  const csv = t.captureBlob();
+  t.click(t.$('btnData'));
+  t.click(t.$('btnExportCsv'));
+  csv.restore();
+  const wangLine = csv.get().text.replace(/^﻿/, '').split('\r\n')
+    .find(r => r.split(',')[1] === '老王');
+  eq(wangLine.split(',').slice(6).join(','), '50.00,-100.00,250.00,20.00%',
+     '★ CSV 每行带抽水、保险、输的流水与折扣');
+  t.close();
+}
+
+{
+  // 保险收钱（正数）→ 计入赢方
+  const t = boot();
+  t.addPlayers(['甲', '乙']);
+  t.click(t.$('btnAddGame'));
+  t.pickPlayers(['甲', '乙']);
+  t.fill(t.prows()[0], { buy: '200', value: '300' });
+  t.fill(t.prows()[1], { buy: '200', value: '0' });
+  ok(t.$('calcHint').textContent.includes('未平'), '无保险时差 100 未平');
+  t.set(t.$('inInsurance'), '100');
+  ok(t.$('calcHint').textContent.includes('已平衡'), '★ 保险收 100 计入赢方后配平');
+  ok(t.$('calcHint').textContent.includes('含保险'), '★ 赢方标注含保险');
+  t.click(t.$('btnSaveGame'));
+  const g = t.raw().ledgers[0].games[0];
+  eq(g.insurance, 10000, '★ 保险收入以 +10000 分落盘');
+  ok(t.$('gameList').textContent.includes('保险（系统）'), '正数保险同样显示系统行');
+  t.close();
+}
+
+{
+  // 旧牌局没有 insurance 字段：按 0 兼容
+  const seed = {
+    version: 1, currentId: 'L',
+    ledgers: [{
+      id: 'L', name: '旧账本',
+      players: [{ id: 'p1', name: '老王' }],
+      games: [{
+        id: 'g1', date: '2026-01-01',
+        entries: [{ playerId: 'p1', playerName: '老王', buys: [10000], balance: 20000 }],
+      }],
+    }],
+  };
+  const t = boot({ 'poker-ledger:v1': JSON.stringify(seed) });
+  eq(t.win.eval('gameStats(ledger().games[0]).insurance'), 0, '★ 旧牌局缺少保险按 0，不猜历史');
+  t.click(t.$('headGames'));
+  t.click(t.q('[data-toggle="g1"]'));
+  ok(!t.$('gameList').textContent.includes('保险（系统）'), '★ 无保险的老牌局不显示系统行');
+  ok(!t.$('gameList').textContent.includes('含保险'), '★ 无保险的老牌局不显示含保险标注');
+  t.win.openGameSheet('g1');
+  eq(t.$('inInsurance').value, '', '★ 旧牌局编辑时保险留空');
+  t.win.closeSheet('ovGame', true);
   t.close();
 }
 

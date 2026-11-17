@@ -940,6 +940,22 @@
         <div class="field-hint">本局水钱，留空按 0 计。折扣 = 抽水 ÷ 输的流水。</div>
       </div>
 
+      <!-- ★ 保险：all-in 时领先方买保险，被反超由保险方赔付。
+           只记本局净额（多次 all-in 填合计）：正数 = 保险收钱，负数 = 保险赔钱。
+           用 ± 按钮切符号，避免手机上数字键盘没有负号。 -->
+      <div class="field">
+        <label class="label" for="inInsurance">保险（正=收，负=赔）</label>
+        <div style="display:flex; gap:8px">
+          <input class="input num" type="text" id="inInsurance" inputmode="decimal"
+                 placeholder="如 200 或 -200，留空按 0 计"
+                 style="flex:1"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">
+          <button type="button" class="btn btn-ghost btn-sm" id="btnInsSign"
+                  style="flex-shrink:0" title="切换正负号">±</button>
+        </div>
+        <div class="field-hint">本局保险净额，计入这局流水；正数=保险收钱，负数=保险赔钱。</div>
+      </div>
+
       <!-- ★ 提示条放在「说明文字」前面。
            它是**动态的**（每改一个数字就变），说明文字是**静态的**（看一次就够）。
            以前它在说明后面，被那一大段顶出滚动窗口 ——
@@ -949,6 +965,7 @@
 
       <div class="note">
         <b>抽水</b> = 本局固定系统角色收取的水钱；配平按「赢方合计 + 抽水 = 输方合计」。<br>
+        <b>保险</b> = all-in 时领先方买保险、被反超由保险方赔付；这里只记本局净额（正=保险收，负=保险赔），计入流水。<br>
         <b>买入</b> = 往牌桌上放的本金（上桌带的钱、中途再加的筹码，都是买入，性质完全一样）。
         每次填新金额后按 <b>回车</b> 或点 <b>+</b>，就记一笔进明细 —— <b>结余不受影响</b>，
         所以「这些钱是本金」这件事不会被算成输赢。<br>
@@ -1264,6 +1281,7 @@ function validateState(input) {
         && Number.isFinite(Date.parse(g.date)) && new Date(g.date).toISOString().slice(0, 10) === g.date, '牌局日期无效');
       if (g.buyDefault !== undefined) { money(g.buyDefault); need(g.buyDefault >= 0, '默认买入不能为负'); }
       if (g.rake !== undefined) { money(g.rake); need(g.rake >= 0, '抽水不能为负'); }
+      if (g.insurance !== undefined) { money(g.insurance); }
       const seen = new Set();
       const entries = array(g.entries, '牌局明细').map(e => {
         need(obj(e) && id(e.playerId) && !seen.has(e.playerId), '明细人员 ID 无效或重复');
@@ -1286,7 +1304,8 @@ function validateState(input) {
         const p = cleanPlayers.find(p => p.id === e.playerId);
         return { playerId: e.playerId, playerName: text(e.playerName, p ? p.name : '（未命名）'), buys, balance };
       });
-      return { id: g.id, date: g.date, buyDefault: g.buyDefault || 0, rake: g.rake === undefined ? 0 : g.rake, entries,
+      return { id: g.id, date: g.date, buyDefault: g.buyDefault || 0, rake: g.rake === undefined ? 0 : g.rake,
+        insurance: g.insurance === undefined ? 0 : g.insurance, entries,
         createdAt: text(g.createdAt, ''), updatedAt: text(g.updatedAt, ''), ...(g._open === true ? { _open: true } : {}) };
     });
     return { id: l.id, name: text(l.name, '（未命名账本）'), players: cleanPlayers, games: cleanGames,
@@ -1496,16 +1515,22 @@ function entriesOf(g) {
 }
 
 function gameStats(g) {
-  let win = 0, loss = 0, pending = 0;
+  let pWin = 0, pLoss = 0, pending = 0;
   for (const e of entriesOf(g)) {
     if (e.netProfit === null) { pending++; continue; }
-    if (e.netProfit > 0) win += e.netProfit;
-    else if (e.netProfit < 0) loss += -e.netProfit;
+    if (e.netProfit > 0) pWin += e.netProfit;
+    else if (e.netProfit < 0) pLoss += -e.netProfit;
   }
   const rake = Number.isSafeInteger(g.rake) && g.rake >= 0 ? g.rake : 0;
+  // ★ 保险按「参与流水的系统角色」处理：正数算赢方，负数算输方。
+  //   这样「赢方合计 + 抽水 = 输方合计」这条配平规则不用再开特例，
+  //   玩家 400 / 保险赔 200 时输的流水就是 600，和明细表整列归零对得上。
+  const insurance = Number.isSafeInteger(g.insurance) ? g.insurance : 0;
+  const win = pWin + (insurance > 0 ? insurance : 0);
+  const loss = pLoss + (insurance < 0 ? -insurance : 0);
   const balanced = pending === 0 && win + rake === loss;
   const discount = loss > 0 ? rake / loss * 100 : null;
-  return { win, loss, rake, discount, pending, flow: loss, diff: win + rake - loss, balanced };
+  return { win, loss, pWin, pLoss, rake, insurance, discount, pending, flow: loss, diff: win + rake - loss, balanced };
 }
 
 function sortedGames() {
@@ -1744,7 +1769,7 @@ function renderGames() {
           ${st.pending ? `<span class="chip">${st.pending}人未结算</span>` : (st.balanced ? '' : '<span class="chip bad">未平</span>')}
         </div>
         <div class="game-right">
-          <span class="game-flow">${st.pending ? '状态' : (st.rake > 0 ? '输的流水' : '流水')}<b class="num" style="color:${st.pending ? 'var(--muted)' : (st.balanced ? 'var(--text)' : 'var(--win)')}" >${st.pending ? '未结算' : `¥${fmtCompact(st.flow)}`}</b></span>
+          <span class="game-flow">${st.pending ? '状态' : (st.rake > 0 || st.insurance !== 0 ? '输的流水' : '流水')}<b class="num" style="color:${st.pending ? 'var(--muted)' : (st.balanced ? 'var(--text)' : 'var(--win)')}" >${st.pending ? '未结算' : `¥${fmtCompact(st.flow)}`}</b></span>
           <span class="caret${isOpen ? ' open' : ''}">▼</span>
           <!-- 编辑/删除提到卡片右上角：收起时也能直接操作，
                不必先展开明细再找工具栏。点按钮不会触发折叠（事件委托里已 return）。 -->
@@ -1784,11 +1809,17 @@ function renderGames() {
               <td class="r num">—</td>
               <td class="r num">+${fmtCompact(st.rake)}</td>
             </tr>` : ''}
+            ${st.insurance !== 0 ? `<tr class="system-row">
+              <td>保险（系统）</td>
+              <td class="r num">—</td>
+              <td class="r num">—</td>
+              <td class="r num">${st.insurance > 0 ? '+' : ''}${fmtCompact(st.insurance)}</td>
+            </tr>` : ''}
           </tbody>
         </table>
         <div class="balance-row num">
-          <span>赢 ¥${fmtCents(st.win)}</span>
-          <span>${st.rake > 0 ? '输的流水' : '输'} ¥${fmtCents(st.loss)}</span>
+          <span>赢 ¥${fmtCents(st.win)}${st.insurance > 0 ? `（含保险 +${fmtCompact(st.insurance)}）` : ''}</span>
+          <span>${st.rake > 0 || st.insurance !== 0 ? '输的流水' : '输'} ¥${fmtCents(st.loss)}${st.insurance < 0 ? `（含保险 ${fmtCompact(st.insurance)}）` : ''}</span>
           ${st.rake > 0 ? `<span>抽水 ¥${fmtCents(st.rake)}</span>
           <span>折扣 ${st.discount === null ? '—' : `${st.discount.toFixed(2)}%${st.pending ? '（已结算部分）' : ''}`}</span>` : ''}
           <span style="color:${st.pending ? 'var(--faint)' : (st.balanced ? 'var(--lose)' : 'var(--win)')}"${st.pending ? ' class="pending-tip"' : ''}>
@@ -1825,6 +1856,8 @@ function openGameSheet(gameId) {
     g && Number.isFinite(g.buyDefault) && g.buyDefault > 0 ? String(g.buyDefault / 100) : '';
   document.getElementById('inRake').value =
     g && Number.isFinite(g.rake) && g.rake > 0 ? String(g.rake / 100) : '';
+  document.getElementById('inInsurance').value =
+    g && Number.isFinite(g.insurance) && g.insurance !== 0 ? String(g.insurance / 100) : '';
 
   rows = g
     ? entriesOf(g).map(e => ({
@@ -2176,6 +2209,14 @@ function updateCalc() {
     box.innerHTML = `<span>${Number.isNaN(rake) ? '抽水金额格式有误（最多两位小数）' : '抽水不能为负'}</span>`;
     return false;
   }
+  // 保险是净额，可正可负：正=保险收钱，负=保险赔钱
+  const insuranceText = document.getElementById('inInsurance').value;
+  const insurance = parseCents(insuranceText);
+  if (Number.isNaN(insurance)) {
+    box.className = 'calc-hint bad';
+    box.innerHTML = '<span>保险金额格式有误（最多两位小数，可正可负）</span>';
+    return false;
+  }
 
   if (res.error) {
     box.className = 'calc-hint bad';
@@ -2185,18 +2226,23 @@ function updateCalc() {
   if (res.entries.length === 0) {
     box.className = 'calc-hint';
     // 措辞：账本里有人员 ≠ 有人上场。新牌局从 0 行开始，这里说的是「场上」没人
-    box.innerHTML = `<span>${ledger().players.length ? '还没有人上场' : '还没有人员'}</span>${rake > 0 ? `<span class="num">抽水 ¥${fmtCents(rake)}</span>` : ''}`;
+    box.innerHTML = `<span>${ledger().players.length ? '还没有人上场' : '还没有人员'}</span>`
+      + (rake > 0 ? `<span class="num">抽水 ¥${fmtCents(rake)}</span>` : '')
+      + (insurance !== 0 ? `<span class="num">保险 ${insurance > 0 ? '+' : ''}${fmtCents(insurance)}</span>` : '');
     return true;
   }
 
-  let win = 0, loss = 0, pending = 0;
+  let pWin = 0, pLoss = 0, pending = 0;
   for (const e of res.entries) {
     // ★ 结余没填的行（未结算）不参与输赢统计 ——
     //   未结算行没有可用于统计的净盈亏。
     if (!e.settled) { pending++; continue; }
-    if (e.netProfit > 0) win += e.netProfit;
-    else if (e.netProfit < 0) loss += -e.netProfit;
+    if (e.netProfit > 0) pWin += e.netProfit;
+    else if (e.netProfit < 0) pLoss += -e.netProfit;
   }
+  // 保险并入流水：正数算赢方，负数算输方（与 gameStats 同一口径）
+  const win = pWin + (insurance > 0 ? insurance : 0);
+  const loss = pLoss + (insurance < 0 ? -insurance : 0);
   const lossFlow = loss;
   const discount = lossFlow > 0 ? rake / lossFlow * 100 : null;
   const balanced = pending === 0 && win + rake === loss;
@@ -2222,18 +2268,23 @@ function updateCalc() {
   const rakeBits = rake > 0
     ? `<span class="num">抽水 ¥${fmtCents(rake)} · 折扣 ${discountText}</span>`
     : '';
+  // 保险已经并入赢/输，这里只在括号里交代一句，避免读者拿「赢+抽水」对不上「输」。
+  const insOnWin = insurance > 0 ? `（含保险 +${fmtCents(insurance)}）` : '';
+  const insOnLoss = insurance < 0 ? `（含保险 ${fmtCents(insurance)}）` : '';
+  const winText = `赢 ¥${fmtCents(win)}${insOnWin}`;
+  const lossText = `${rake > 0 || insurance !== 0 ? '输的流水' : '输'} ¥${fmtCents(lossFlow)}${insOnLoss}`;
   const flow = pending
-    ? `<span class="num">赢 ¥${fmtCents(win)}</span>
-       ${rake > 0 ? `<span class="num">输的流水 ¥${fmtCents(lossFlow)}</span>` : `<span class="num">输 ¥${fmtCents(lossFlow)}</span>`}
+    ? `<span class="num">${winText}</span>
+       <span class="num">${lossText}</span>
        ${rakeBits}
        ${balanceDiff !== 0 ? `<span class="num sum-gap">差 ¥${fmtCents(Math.abs(balanceDiff))} 未平（已结算部分）</span>` : ''}`
     : (balanced
       ? (rake > 0
-        ? `<span class="num">已平衡 · 赢 ¥${fmtCents(win)} + 抽水 ¥${fmtCents(rake)} = 输 ¥${fmtCents(lossFlow)}</span>
+        ? `<span class="num">已平衡 · ${winText} + 抽水 ¥${fmtCents(rake)} = ${lossText}</span>
            <span class="num">折扣 ${discountText}</span>`
-        : `<span class="num">已平衡 · 流水 ¥${fmtCents(win)}</span>`)
-      : `<span class="num">赢 ¥${fmtCents(win)}</span>
-         ${rake > 0 ? `<span class="num">输的流水 ¥${fmtCents(lossFlow)}</span>` : `<span class="num">输 ¥${fmtCents(lossFlow)}</span>`}
+        : `<span class="num">已平衡 · 流水 ¥${fmtCents(win)}${insOnWin || insOnLoss}</span>`)
+      : `<span class="num">${winText}</span>
+         <span class="num">${lossText}</span>
          ${rakeBits}
          <span class="num sum-gap">差 ¥${fmtCents(Math.abs(balanceDiff))} 未平</span>`);
 
@@ -2244,8 +2295,8 @@ function updateCalc() {
   // 比只显示「差 ¥100 未平」更接近真正要做的动作。
   const rakeTip = rake > 0 && lossFlow === 0
     ? '<span class="pending-tip">抽水大于 0，但输的流水为 0，折扣无法计算</span>'
-    : (rake === 0 && pending === 0 && balanceDiff < 0
-      ? '<span class="pending-tip">差额可能来自抽水，若本局有抽水请填写金额</span>'
+    : (rake === 0 && insurance === 0 && pending === 0 && balanceDiff < 0
+      ? '<span class="pending-tip">差额可能来自抽水或保险，若本局有请填写</span>'
       : '');
 
   box.innerHTML = `
@@ -2296,16 +2347,23 @@ function saveGame() {
     document.getElementById('inRake').focus();
     return;
   }
+  const rawInsurance = parseCents(document.getElementById('inInsurance').value);
+  if (!Number.isSafeInteger(rawInsurance)) {
+    toast('保险金额格式有误（最多两位小数，可正可负）');
+    document.getElementById('inInsurance').focus();
+    return;
+  }
   const buyDefault = rawDefault;
   const rake = rawRake;
+  const insurance = rawInsurance;
   const editing = editGameId;
   if (editing && !l.games.some(g => g.id === editing)) { toast('这场牌局已不存在'); return; }
   if (!changeState((state, target) => {
     if (editing) {
       const g = target.games.find(g => g.id === editing);
-      Object.assign(g, { date, buyDefault, rake, entries: stored, updatedAt: new Date().toISOString() });
+      Object.assign(g, { date, buyDefault, rake, insurance, entries: stored, updatedAt: new Date().toISOString() });
     } else {
-      target.games.push({ id: uid(), date, buyDefault, rake, entries: stored,
+      target.games.push({ id: uid(), date, buyDefault, rake, insurance, entries: stored,
         createdAt: new Date().toISOString(), _open: true });
     }
   })) return;
@@ -2534,6 +2592,7 @@ function canonicalSheetState() {
     date: document.getElementById('inDate').value || '',
     buyDefault: document.getElementById('inBuyDefault').value.trim(),
     rake: document.getElementById('inRake').value.trim(),
+    insurance: document.getElementById('inInsurance').value.trim(),
     rows: rowState,
   });
 }
@@ -2662,7 +2721,7 @@ function exportCsv() {
     if (/^[\s\u0000-\u001f]*[=+\-@]/.test(v)) v = "'" + v;
     return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   };
-  const head = ['日期', '人员', '买入', '总买入', '结余', '净盈亏', '本局抽水', '输的流水', '折扣'];
+  const head = ['日期', '人员', '买入', '总买入', '结余', '净盈亏', '本局抽水', '本局保险', '输的流水', '折扣'];
   const lines = [head.join(',')];
   for (const g of l.games) {
     const entries = entriesOf(g);
@@ -2677,6 +2736,7 @@ function exportCsv() {
         e.balance === null ? '' : fmtCents(e.balance),
         e.netProfit === null ? '' : fmtCents(e.netProfit),
         fmtCents(st.rake),
+        fmtCents(st.insurance),
         fmtCents(st.loss),
         discount,
       ].join(','));
@@ -2806,6 +2866,15 @@ document.getElementById('gameList').addEventListener('click', e => {
 const NUMERIC_FIELDS = ['buy', 'value'];
 
 document.getElementById('inRake').addEventListener('input', updateCalc);
+document.getElementById('inInsurance').addEventListener('input', updateCalc);
+// ± ：手机数字键盘通常没有负号，用按钮切符号，避免「赔钱却填不进去」
+document.getElementById('btnInsSign').addEventListener('click', () => {
+  const el = document.getElementById('inInsurance');
+  const v = el.value.trim();
+  if (!v) return;
+  el.value = v.startsWith('-') ? v.slice(1) : (v.startsWith('+') ? v.slice(1) : '-' + v);
+  updateCalc();
+});
 
 document.getElementById('rowZone').addEventListener('input', e => {
   const i = e.target.dataset.i;
