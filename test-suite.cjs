@@ -1778,6 +1778,174 @@ section('W. 保险：带入/结余 / 计入流水 / 配平 / 兼容');
   t.close();
 }
 
+section('X. 历史数据体检：旧「抽水/保险」人员迁移到牌局字段');
+{
+  // 五场牌局，四种旧式系统人员：
+  //   抽水（g1 +100 / g5 +20）、水钱（g7 +50）、保险（g2 带100结150）、保险池（g6，人员已删只剩明细）
+  // 另有「抽水哥」是真人昵称，白名单不该命中。
+  const seed = {
+    version: 1, currentId: 'L',
+    ledgers: [{
+      id: 'L', name: '旧账本',
+      players: [
+        { id: 'p1', name: '老王' }, { id: 'p2', name: '小李' },
+        { id: 'pr', name: '抽水' }, { id: 'pi', name: '保险' },
+        { id: 'pp', name: '水钱' }, { id: 'px', name: '抽水哥' },
+      ],
+      games: [
+        { id: 'g1', date: '2026-01-01', entries: [
+          { playerId: 'p1', playerName: '老王', buys: [20000], balance: 30000 },   // +100
+          { playerId: 'p2', playerName: '小李', buys: [20000], balance: 0 },       // -200
+          { playerId: 'pr', playerName: '抽水', buys: [], balance: 10000 },        // +100
+        ]},
+        { id: 'g2', date: '2026-01-02', entries: [
+          { playerId: 'p1', playerName: '老王', buys: [20000], balance: 30000 },   // +100
+          { playerId: 'p2', playerName: '小李', buys: [20000], balance: 5000 },    // -150
+          { playerId: 'pi', playerName: '保险', buys: [10000], balance: 15000 },   // +50
+        ]},
+        { id: 'g5', date: '2026-01-05', rake: 3000, entries: [
+          { playerId: 'p1', playerName: '老王', buys: [10000], balance: 15000 },   // +50
+          { playerId: 'p2', playerName: '小李', buys: [10000], balance: 0 },       // -100
+          { playerId: 'pr', playerName: '抽水', buys: [], balance: 2000 },         // +20
+        ]},
+        { id: 'g6', date: '2026-01-06', entries: [
+          { playerId: 'p1', playerName: '老王', buys: [10000], balance: 15000 },   // +50
+          { playerId: 'p2', playerName: '小李', buys: [10000], balance: 0 },       // -100
+          { playerId: 'pk', playerName: '保险池', buys: [10000], balance: 5000 },  // -50（人员已删）
+        ]},
+        { id: 'g7', date: '2026-01-07', entries: [
+          { playerId: 'p1', playerName: '老王', buys: [10000], balance: 15000 },   // +50
+          { playerId: 'p2', playerName: '小李', buys: [10000], balance: 0 },       // -100
+          { playerId: 'pp', playerName: '水钱', buys: [], balance: 5000 },         // +50
+        ]},
+      ],
+    }],
+  };
+  const t = boot({ 'poker-ledger:v1': JSON.stringify(seed) });
+  // ★ 只比对「不该变」的量：win+rake 与 loss 是两条汇总口径，
+  //   rake / insurance 本身当然会变（钱从人员行搬到了牌局字段）。
+  const statsSnap = () => t.win.eval(
+    'ledger().games.map(g => { const s = gameStats(g);'
+    + ' return [g.id, s.win + s.rake, s.loss, s.balanced, s.pending].join("|"); }).join(",")');
+  const info = key => t.win.eval(
+    `(() => { const x = inspectHistory().find(y => y.key === ${JSON.stringify(key)});`
+    + ' return x ? [x.kind, x.entries, x.ok, x.blocked, x.net].join("|") : "none"; })()');
+
+  const before = statsSnap();
+  eq(info('rake|抽水'), 'rake|2|2|0|12000', '★ 旧「抽水」人员被识别：2 场可迁移，净 +120');
+  eq(info('rake|水钱'), 'rake|1|1|0|5000', '★ 别名「水钱」同样命中');
+  eq(info('insurance|保险'), 'insurance|1|1|0|5000', '★ 旧「保险」人员按净额识别');
+  eq(info('insurance|保险池'), 'insurance|1|1|0|-5000', '★ 人员已删、只剩明细快照的也能识别');
+  ok(!t.win.eval('inspectHistory().some(x => x.label === "抽水哥")'),
+     '★ 白名单精确匹配：「抽水哥」是真名，不被当成系统角色');
+  ok(t.$('btnHealth').textContent.includes('4 项待迁移'), '★ 数据面板入口显示待迁移数量');
+
+  // 打开清单：4 项默认全选
+  t.click(t.$('btnData'));
+  t.click(t.$('btnHealth'));
+  ok(t.$('ovHealth').classList.contains('show'), '★ 体检面板打开');
+  eq(t.qa('#healthList .pick').length, 4, '★ 清单列出 4 项');
+  eq(t.qa('#healthList .pick.on').length, 4, '★ 可迁移项默认勾选');
+  ok(t.$('btnHealthApply').textContent.includes('4'), '★ 按钮显示将迁移 4 项');
+
+  t.click(t.$('btnHealthApply'));
+  const after = t.raw().ledgers[0];
+  const byId = id => after.games.find(g => g.id === id);
+
+  eq(byId('g1').rake, 10000, '★ g1 抽水 +100 落到本局 rake（整数分）');
+  eq(byId('g1').entries.length, 2, '★ g1 的抽水人员明细已移除');
+  eq(byId('g5').rake, 5000, '★ g5 已有抽水 30，与旧人员 20 累加为 50（不覆盖）');
+  eq(byId('g7').rake, 5000, '★ 别名「水钱」同样并入抽水');
+  eq([byId('g2').insBuy, byId('g2').insBalance, byId('g2').insurance].join(','),
+     '10000,15000,5000', '★ g2 保险按带入/结余落库，净额 +50 不变');
+  eq([byId('g6').insBuy, byId('g6').insBalance, byId('g6').insurance].join(','),
+     '10000,5000,-5000', '★ g6 已删人员的保险池按带入/结余落库，净额 −50 不变');
+  eq(after.games.reduce((n, g) => n + g.entries.length, 0), 10, '★ 共移除 5 条系统人员明细（15 → 10）');
+
+  // ★ 核心保证：迁移只搬钱，不改账
+  eq(statsSnap(), before, '★ 迁移前后每局 win+rake / loss / 配平 / 未结算 完全一致（只搬不改）');
+
+  const names = t.win.eval('ledger().players.map(p => p.name).join(",")');
+  eq(names, '老王,小李,抽水哥', '★ 迁空的人员被移除，真人「抽水哥」保留');
+  ok(!t.win.eval('leaderboard().some(r => ["抽水", "水钱", "保险", "保险池"].includes(r.name))'),
+     '★ 排行榜不再出现旧系统人员');
+  eq(t.win.eval('leaderboard().find(r => r.name === "老王").net'), 35000,
+     '★ 真实玩家累计盈亏不受迁移影响（老王 +350）');
+
+  // 备份 + 幂等
+  eq([...t.store.keys()].filter(k => k.startsWith('poker-ledger:v1:before-migrate:')).length, 1,
+     '★ 迁移前自动留了一份备份');
+  eq(t.win.eval('inspectHistory().length'), 0, '★ 迁移后再体检为空（幂等，不会重复搬）');
+  eq(t.$('btnHealth').textContent.trim(), '检查历史数据', '★ 清空后入口不再显示数量');
+  t.win.closeSheet('ovHealth', true);
+  t.win.closeSheet('ovData', true);
+  t.close();
+}
+
+{
+  // 不可迁移的记录：抽水净额为负、保险未结算 —— 必须原样留着并计数
+  const seed = {
+    version: 1, currentId: 'L',
+    ledgers: [{
+      id: 'L', name: '旧账本',
+      players: [{ id: 'p1', name: '老王' }, { id: 'p2', name: '小李' },
+                { id: 'pr', name: '抽水' }, { id: 'pi', name: '保险' }],
+      games: [
+        { id: 'g3', date: '2026-01-03', entries: [
+          { playerId: 'p1', playerName: '老王', buys: [10000], balance: 5000 },
+          { playerId: 'p2', playerName: '小李', buys: [10000], balance: 15000 },
+          { playerId: 'pr', playerName: '抽水', buys: [10000], balance: 5000 },   // 净 -50
+        ]},
+        { id: 'g4', date: '2026-01-04', entries: [
+          { playerId: 'p1', playerName: '老王', buys: [10000], balance: 15000 },
+          { playerId: 'p2', playerName: '小李', buys: [10000], balance: 5000 },
+          { playerId: 'pi', playerName: '保险', buys: [10000] },                  // 未结算
+        ]},
+      ],
+    }],
+  };
+  const t = boot({ 'poker-ledger:v1': JSON.stringify(seed) });
+  const info = key => t.win.eval(
+    `(() => { const x = inspectHistory().find(y => y.key === ${JSON.stringify(key)});`
+    + ' return x ? [x.ok, x.blocked, x.entries].join("|") : "none"; })()');
+  eq(info('rake|抽水'), '0|1|1', '★ 抽水净额为负 → 标为不可迁移，不硬塞进 rake');
+  eq(info('insurance|保险'), '0|1|1', '★ 保险未结算 → 不把「未结算」写成 0 结余');
+  eq(t.$('btnHealth').textContent.trim(), '检查历史数据', '★ 没有可迁移项时不显示数量');
+
+  const raw = t.seedRaw();
+  const r = t.win.applyHistoryMigration(['rake|抽水', 'insurance|保险']);
+  eq(JSON.stringify(r), '{"moved":0,"skipped":0}', '★ 全部不可迁移时不执行任何搬运');
+  eq(t.seedRaw(), raw, '★ 存档逐字节不变');
+  eq([...t.store.keys()].filter(k => k.startsWith('poker-ledger:v1:before-migrate:')).length, 0,
+     '★ 没搬东西就不产生无意义的备份');
+  t.close();
+}
+
+{
+  // 备份写不进去 → 整体中止，一个字节都不许改
+  const seed = {
+    version: 1, currentId: 'L',
+    ledgers: [{
+      id: 'L', name: '旧账本',
+      players: [{ id: 'p1', name: '老王' }, { id: 'p2', name: '小李' }, { id: 'pr', name: '抽水' }],
+      games: [{ id: 'g1', date: '2026-01-01', entries: [
+        { playerId: 'p1', playerName: '老王', buys: [20000], balance: 30000 },
+        { playerId: 'p2', playerName: '小李', buys: [20000], balance: 0 },
+        { playerId: 'pr', playerName: '抽水', buys: [], balance: 10000 },
+      ]}],
+    }],
+  };
+  const t = boot({ 'poker-ledger:v1': JSON.stringify(seed) });
+  const raw = t.seedRaw();
+  t.setFailWrites(k => k.startsWith('poker-ledger:v1:before-migrate:'));
+  const r = t.win.applyHistoryMigration(['rake|抽水']);
+  eq(r, null, '★ 备份失败时返回 null（调用方据此不动界面状态）');
+  eq(t.seedRaw(), raw, '★ 备份失败不得改动主存档');
+  eq(t.raw().ledgers[0].games[0].entries.length, 3, '★ 备份失败时系统人员明细原样保留');
+  t.setFailWrites(false);
+  t.close();
+}
+
 /* ===========================================================================
  * 汇总
  * ======================================================================== */

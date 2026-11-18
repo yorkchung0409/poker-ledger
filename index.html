@@ -762,6 +762,14 @@
   }
   .pick.on { border-color: var(--primary); background: var(--surface2); }
   .pick.on .pick-box { background: var(--primary); border-color: var(--primary); }
+
+  /* 历史数据体检：一行一个候选。左侧勾选框复用 .pick-box，
+     右侧只放「会变成什么」，钱数写在姓名下面一行，避免窄屏挤成两截。 */
+  .health-sub { display: block; font-size: 11.5px; color: var(--muted); margin-top: 3px; line-height: 1.5; }
+  .health-sub b { color: var(--gold); font-weight: 600; }
+  .health-val { font-size: 12px; color: var(--muted); text-align: right; flex-shrink: 0; max-width: 42%; }
+  .pick.on .health-val { color: var(--primary); }
+  .pick:disabled .health-val { color: var(--faint); }
   /* 选中项里已上场的人不该出现（已上场根本不可选），所以无需额外态 */
 
   /* 录入表空态：新牌局打开时一行都没有 */
@@ -1069,6 +1077,7 @@
       <button class="btn btn-ghost btn-block" id="btnExportCsv" style="margin-bottom:9px">导出牌局明细（Excel 可打开）</button>
       <button class="btn btn-ghost btn-block" id="btnImport" style="margin-bottom:9px">从备份文件恢复</button>
       <input type="file" id="fileImport" accept=".json,application/json" style="display:none">
+      <button class="btn btn-ghost btn-block" id="btnHealth" style="margin-bottom:9px">检查历史数据</button>
       <div id="recoveryList" style="margin:14px 0;overflow-wrap:anywhere"></div>
       <div class="note">
         JSON 备份包含全部账本、人员与牌局记录，用于完整恢复。<br>
@@ -1079,6 +1088,27 @@
       <div class="danger-zone">
         <button class="btn btn-ghost btn-block" id="btnClearGames">清空当前账本的牌局记录</button>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- 历史数据体检：把旧数据里「当人员记的抽水/保险」搬到牌局字段 -->
+<div class="overlay" id="ovHealth">
+  <div class="sheet">
+    <div class="sheet-head">
+      <div class="sheet-title">历史数据体检</div>
+      <button class="sheet-close" data-close="ovHealth">×</button>
+    </div>
+    <div class="sheet-body">
+      <div class="note" id="healthIntro"></div>
+      <div class="picklist" id="healthList" style="margin-top:12px"></div>
+    </div>
+    <div class="sheet-foot sheet-foot-col">
+      <div style="display:flex; gap:8px">
+        <button class="btn btn-ghost" data-close="ovHealth" style="flex:1">取消</button>
+        <button class="btn btn-primary" id="btnHealthApply" style="flex:1">迁移所选</button>
+      </div>
+      <div class="note note-tight">迁移只会把这笔钱从人员行搬到本局字段，金额与配平结果都不变。迁移前会自动留一份备份。</div>
     </div>
   </div>
 </div>
@@ -1195,6 +1225,7 @@ let saveBroken = false;       // 最近一次写盘是否失败
 let brokenArchived = false;
 let storageReadFailed = false;
 const IMPORT_PREFIX = KEY + ':before-import:';
+const MIGRATE_PREFIX = KEY + ':before-migrate:';
 
 let db = load();
 let currentId = db.currentId;
@@ -1365,6 +1396,13 @@ function exportBroken() {
   toast('损坏的原始存档已导出，可发给开发者尝试修复');
 }
 
+/** 恢复副本的类型标签：三种前缀共用同一套导出/列表逻辑 */
+function archiveLabel(key) {
+  if (key.startsWith(BROKEN_PREFIX)) return '损坏原件';
+  if (key.startsWith(MIGRATE_PREFIX)) return '迁移前备份';
+  return '导入前备份';
+}
+
 function downloadArchive(key) {
   try {
     const raw = localStorage.getItem(key);
@@ -1373,7 +1411,7 @@ function downloadArchive(key) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `扑克记分房-${key.startsWith(BROKEN_PREFIX) ? '损坏原件' : '导入前备份'}-${key.split(':').slice(3).join('-').replace(/[^A-Za-z0-9_-]/g, '-')}.json`;
+    a.download = `扑克记分房-${archiveLabel(key)}-${key.split(':').slice(3).join('-').replace(/[^A-Za-z0-9_-]/g, '-')}.json`;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 1000);
     toast('恢复副本已导出；有效备份可通过恢复按钮导入');
@@ -1384,15 +1422,16 @@ function renderRecoveryList() {
   const box = document.getElementById('recoveryList');
   if (!box) return;
   try {
-    const keys = [...archiveKeys(BROKEN_PREFIX), ...archiveKeys(IMPORT_PREFIX)];
+    const keys = [...archiveKeys(BROKEN_PREFIX), ...archiveKeys(IMPORT_PREFIX), ...archiveKeys(MIGRATE_PREFIX)];
     box.innerHTML = keys.length ? '<div class="note"><b>保留的恢复副本（不会自动删除）</b></div>' : '';
     keys.forEach(key => {
       const btn = document.createElement('button');
       btn.className = 'btn btn-ghost btn-block btn-sm';
       btn.dataset.archive = key;
       btn.style.marginTop = '7px';
-      const prefix = key.startsWith(BROKEN_PREFIX) ? BROKEN_PREFIX : IMPORT_PREFIX;
-      btn.textContent = `导出${prefix === BROKEN_PREFIX ? '损坏原件' : '导入前备份'} · ${key.slice(prefix.length, prefix.length + 19).replace('T', ' ')}`;
+      const prefix = key.startsWith(BROKEN_PREFIX) ? BROKEN_PREFIX
+        : (key.startsWith(MIGRATE_PREFIX) ? MIGRATE_PREFIX : IMPORT_PREFIX);
+      btn.textContent = `导出${archiveLabel(key)} · ${key.slice(prefix.length, prefix.length + 19).replace('T', ' ')}`;
       btn.onclick = () => downloadArchive(key);
       box.appendChild(btn);
     });
@@ -1561,6 +1600,131 @@ function gameStats(g) {
   return { win, loss, pWin, pLoss, rake, insBuy, insBalance, insurance, discount, pending, flow: loss, diff: win + rake - loss, balanced };
 }
 
+/* ============================================================
+   历史数据体检
+   ------------------------------------------------------------
+   v29 起抽水、v30 起保险都是「牌局级系统角色」，不再是人员。
+   但更早的数据里，可能有人手工建了一个叫「抽水」/「保险」的人员来记账 ——
+   那笔钱至今仍混在玩家流水里：既进排行榜，又让配平看起来是玩家自己平的。
+
+   这里只做两件事：① 用白名单把它找出来；② 用户勾选后搬到牌局字段。
+   ★ 迁移只「搬」不「算」：净额从人员行搬到牌局字段，所以每个人的盈亏、
+     赢方合计、输方合计、以及最终的配平结果都一分不变。
+   ============================================================ */
+const LEGACY_SYSTEM_ALIASES = {
+  rake: ['抽水', '抽水费', '水钱', '抽佣', '抽成', 'rake'],
+  insurance: ['保险', '保险方', '保险赔付', '保险池', 'insurance'],
+};
+
+/** 名称归一化：去掉所有空白并转小写，仅用于白名单比对 */
+const normName = s =>
+  String(s === null || s === undefined ? '' : s).replace(/\s+/g, '').toLowerCase();
+
+/**
+ * 命中白名单则返回系统角色类型，否则 null。
+ * ★ 有意不做模糊匹配：真有个牌友昵称「保险哥」，不该被当成系统角色清掉。
+ */
+function systemKindOf(name) {
+  const k = normName(name);
+  if (!k) return null;
+  if (LEGACY_SYSTEM_ALIASES.rake.includes(k)) return 'rake';
+  if (LEGACY_SYSTEM_ALIASES.insurance.includes(k)) return 'insurance';
+  return null;
+}
+
+/**
+ * 扫描当前账本，返回「像旧式系统人员」的候选组。
+ * 按归一化姓名分组而不是按 playerId —— 删掉再重建会换 id，但钱是同一笔。
+ */
+function inspectHistory(l = ledger()) {
+  if (!l) return [];
+  const groups = new Map();
+  const idName = new Map(l.players.map(p => [p.id, p.name]));
+  const blank = () => ({ entries: 0, ok: 0, blocked: 0, net: 0, ids: new Set() });
+
+  for (const g of l.games) {
+    // ★ 先按姓名字符串筛，命中白名单才去做明细归一化 ——
+    //   这个方法每次 render 都要跑，不能让几千条普通明细白白分配对象。
+    for (const raw of (g.entries || [])) {
+      // 明细里的姓名是当时的快照；快照缺失时才回落到人员表（可能已删人）
+      const snapshot = String(raw.playerName || '').trim();
+      const name = snapshot && snapshot !== '（未命名）' ? snapshot : (idName.get(raw.playerId) || '');
+      const kind = systemKindOf(name);
+      if (!kind) continue;
+      const e = normalizeEntry(raw);
+      const key = kind + '|' + normName(name);
+      if (!groups.has(key)) {
+        groups.set(key, { key, kind, label: String(name).trim(), norm: normName(name), ...blank() });
+      }
+      const row = groups.get(key);
+      row.ids.add(e.playerId);
+      row.entries += 1;
+      // 未结算（结余为空）不能当 0 搬走；抽水净额为负也不合法，两者都留给人工判断
+      if (e.netProfit === null || (kind === 'rake' && e.netProfit < 0)) { row.blocked += 1; continue; }
+      row.ok += 1;
+      row.net += e.netProfit;
+    }
+  }
+  // 人员表里有、但一场都没上过的也列出来：名字还占着一个人员位
+  for (const p of l.players) {
+    const kind = systemKindOf(p.name);
+    if (!kind) continue;
+    const key = kind + '|' + normName(p.name);
+    if (!groups.has(key)) {
+      groups.set(key, { key, kind, label: String(p.name).trim(), norm: normName(p.name), ...blank() });
+    }
+    groups.get(key).ids.add(p.id);
+  }
+  return [...groups.values()]
+    .sort((a, b) => b.entries - a.entries || a.label.localeCompare(b.label));
+}
+
+/**
+ * 把选中的旧人员记录并入牌局字段。
+ * @returns {{moved:number, skipped:number}|null} null = 备份失败，数据一字未动
+ */
+function applyHistoryMigration(keys) {
+  const picked = inspectHistory().filter(x => keys.includes(x.key) && x.ok > 0);
+  if (!picked.length) return { moved: 0, skipped: 0 };
+  // 迁移前先原样留一份；复用「恢复副本」机制，可在数据面板导出
+  try {
+    const raw = localStorage.getItem(KEY);
+    if (raw) archiveRaw(MIGRATE_PREFIX, raw);
+  } catch (e) {
+    toast('无法创建迁移前备份，已中止；数据未改动', 3600);
+    return null;
+  }
+  let moved = 0, skipped = 0;
+  const saved = changeState((state, target) => {
+    for (const grp of picked) {
+      for (const g of target.games) {
+        const keep = [];
+        for (const e of g.entries) {
+          // id 命中或快照姓名命中都算 —— 覆盖「删了人员又重建同名」的历史残留
+          const hit = grp.ids.has(e.playerId) || normName(e.playerName) === grp.norm;
+          if (!hit) { keep.push(e); continue; }
+          const ne = normalizeEntry(e);
+          if (ne.netProfit === null || (grp.kind === 'rake' && ne.netProfit < 0)) {
+            keep.push(e); skipped += 1; continue;
+          }
+          if (grp.kind === 'rake') {
+            g.rake = (g.rake || 0) + ne.netProfit;
+          } else {
+            g.insBuy = (g.insBuy || 0) + ne.totalBuy;
+            g.insBalance = (g.insBalance || 0) + ne.balance;
+          }
+          moved += 1;
+        }
+        g.entries = keep;
+      }
+      // 迁移后在本账本已没有任何明细的人员，从人员表移除（历史快照姓名不受影响）
+      target.players = target.players.filter(p =>
+        !grp.ids.has(p.id) || target.games.some(g => (g.entries || []).some(e => e.playerId === p.id)));
+    }
+  });
+  return saved ? { moved, skipped } : null;
+}
+
 function sortedGames() {
   const l = ledger();
   if (!l) return [];
@@ -1625,6 +1789,7 @@ function render() {
   renderStats();
   renderRank();
   renderGames();
+  renderHealthBadge();
   const l = ledger();
   document.getElementById('btnAddGame').disabled = !l || l.players.length === 0;
 }
@@ -1765,6 +1930,67 @@ function renderRank() {
       <div class="rank-net num" style="color:${color}">${netText}</div>
     </div>`;
   }).join('');
+}
+
+/* ---------- 历史数据体检：入口角标 + 清单 ---------- */
+let healthSel = [];
+
+function renderHealthBadge() {
+  const btn = document.getElementById('btnHealth');
+  if (!btn) return;
+  let n = 0;
+  try { n = inspectHistory().filter(x => x.ok > 0).length; } catch (e) { n = 0; }
+  // 有可迁移项才在按钮上写数量，平时保持干净的「检查历史数据」
+  btn.textContent = n ? `检查历史数据 · ${n} 项待迁移` : '检查历史数据';
+}
+
+function openHealth() {
+  healthSel = inspectHistory().filter(x => x.ok > 0).map(x => x.key);
+  renderHealth();
+  openSheet('ovHealth');
+}
+
+function renderHealth(done) {
+  const list = inspectHistory();
+  const box = document.getElementById('healthList');
+  const intro = document.getElementById('healthIntro');
+  const apply = document.getElementById('btnHealthApply');
+
+  if (!list.length) {
+    intro.innerHTML = done
+      ? '迁移完成：已经没有任何重名的「抽水 / 保险」人员了。'
+      : '没有发现把「抽水」或「保险」当人员记录的旧数据，不需要迁移。';
+    box.innerHTML = '';
+    apply.disabled = true;
+    apply.textContent = '迁移所选';
+    return;
+  }
+
+  intro.innerHTML = '下面这些名字和系统角色重名。勾选后会把<strong>每一局</strong>的钱搬到该局的抽水 / 保险字段，并从人员明细里移除；'
+    + '金额与配平结果不变，迁移前会自动留一份备份。';
+
+  box.innerHTML = list.map(x => {
+    const on = healthSel.includes(x.key);
+    const can = x.ok > 0;
+    const bits = [`${x.entries} 场`];
+    if (x.ok) bits.push(`净 ${x.net > 0 ? '+' : ''}${fmtCents(x.net)}`);
+    if (x.blocked) bits.push(`<b>${x.blocked} 场将跳过</b>`);
+    if (!x.entries) bits.push('未上场');
+    return `<button class="pick${on ? ' on' : ''}" data-hkey="${esc(x.key)}"${can ? '' : ' disabled'}>
+      <span class="pick-left">
+        <span class="pick-box">${on ? '✓' : ''}</span>
+        <span style="min-width:0">
+          <span>${esc(x.label)}</span>
+          <span class="health-sub">${bits.join(' · ')}</span>
+        </span>
+      </span>
+      <span class="health-val">${can ? (x.kind === 'rake' ? '并入本局抽水' : '并入本局保险') : '仅列出'}</span>
+    </button>`;
+  }).join('');
+
+  const n = list.filter(x => healthSel.includes(x.key) && x.ok > 0).length;
+  apply.disabled = n === 0;
+  apply.textContent = n ? `迁移所选（${n}）` : '迁移所选';
 }
 
 function renderGames() {
@@ -2712,6 +2938,33 @@ document.getElementById('btnLedgers').onclick = () => { renderLedgers(); openShe
 document.getElementById('btnNewLedger').onclick = newLedger;
 
 document.getElementById('btnData').onclick = () => openSheet('ovData');
+
+// 历史数据体检：检测 → 勾选 → 迁移（迁移前自动备份）
+document.getElementById('btnHealth').onclick = openHealth;
+document.getElementById('healthList').addEventListener('click', e => {
+  const btn = e.target.closest('[data-hkey]');
+  if (!btn || btn.disabled) return;
+  const key = btn.dataset.hkey;
+  healthSel = healthSel.includes(key)
+    ? healthSel.filter(k => k !== key)
+    : [...healthSel, key];
+  renderHealth();
+});
+document.getElementById('btnHealthApply').onclick = () => {
+  if (!healthSel.length) return;
+  // 用「条数」而不是「项数」提问：用户关心的是有多少笔记录会被搬走
+  const n = inspectHistory()
+    .filter(x => healthSel.includes(x.key))
+    .reduce((sum, x) => sum + x.ok, 0);
+  if (!n) return;
+  if (!confirm(`迁移会把 ${n} 条旧人员记录并入牌局字段，并从人员明细里移除。\n\n金额与配平结果不会改变，迁移前会自动留一份备份。\n\n确定继续吗？`)) return;
+  const r = applyHistoryMigration(healthSel);
+  if (!r) return;   // 备份失败：函数内已提示，数据未动
+  render();
+  healthSel = inspectHistory().filter(x => x.ok > 0).map(x => x.key);
+  renderHealth(true);
+  toast(r.moved ? `已迁移 ${r.moved} 条${r.skipped ? `，跳过 ${r.skipped} 条` : ''}` : '没有可迁移的记录', 3200);
+};
 
 // 存储告警条的两个按钮
 document.getElementById('btnAlertExport').onclick = exportBroken;
