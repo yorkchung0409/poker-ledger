@@ -932,7 +932,7 @@ section('L. 持久化、导出与损坏数据回退');
   const csvText = csv.get().text;
   ok(/text\/csv/.test(csv.get().opts.type) && /\.csv$/.test(name || ''), '★ 导出的是 CSV 文件');
   eq([csvText.charCodeAt(0) === 0xFEFF, csvText.replace(/^﻿/, '').split('\r\n')[0]].join(','),
-     'true,日期,人员,买入,总买入,结余,净盈亏,本局抽水,本局保险,输的流水,折扣', '★ CSV 带 UTF-8 BOM（否则 Excel 中文乱码）且表头正确');
+     'true,日期,人员,买入,总买入,结余,净盈亏,本局抽水,保险带入,保险结余,保险净额,输的流水,折扣', '★ CSV 带 UTF-8 BOM（否则 Excel 中文乱码）且表头正确');
   {
     const cells = csvText.replace(/^﻿/, '').split('\r\n')[1].split(',');
     ok(/^\d+\.\d\d$/.test(cells[3]) && /^-?\d+\.\d\d$/.test(cells[5]) && !/¥/.test(csvText),
@@ -1346,6 +1346,7 @@ section('R. 导入校验与导入前快照');
     ['负数抽水', { ...base, ledgers: [{ ...base.ledgers[0], games: [{ id: 'g', date: '2026-01-01', rake: -1, entries: [] }] }] }],
     ['非整数抽水', { ...base, ledgers: [{ ...base.ledgers[0], games: [{ id: 'g', date: '2026-01-01', rake: 1.5, entries: [] }] }] }],
     ['非整数保险', { ...base, ledgers: [{ ...base.ledgers[0], games: [{ id: 'g', date: '2026-01-01', insurance: 1.5, entries: [] }] }] }],
+    ['负数保险带入', { ...base, ledgers: [{ ...base.ledgers[0], games: [{ id: 'g', date: '2026-01-01', insBuy: -1, entries: [] }] }] }],
     ['不支持版本', { ...base, version: 2 }],
   ];
   const rejected = [];
@@ -1587,10 +1588,10 @@ section('V. 本局抽水：系统角色 / 折扣 / 配平 / 兼容');
   t.click(t.$('btnExportCsv'));
   csv.restore();
   const lines = csv.get().text.replace(/^﻿/, '').split('\r\n');
-  eq(lines[0].split(',').slice(6).join(','), '本局抽水,本局保险,输的流水,折扣', '★ CSV 增加抽水/保险/输的流水/折扣列');
+  eq(lines[0].split(',').slice(6).join(','), '本局抽水,保险带入,保险结余,保险净额,输的流水,折扣', '★ CSV 增加抽水/保险/输的流水/折扣列');
   const wang = lines.find(r => r.split(',')[0] === g.date && r.split(',')[1] === '老王');
-  eq(wang.split(',').slice(6).join(','), '50.00,0.00,150.00,66.67%',
-     '★ CSV 每行重复整局抽水、保险、输的流水与折扣，金额保留两位小数');
+  eq(wang.split(',').slice(6).join(','), '50.00,0.00,0.00,0.00,150.00,66.67%',
+     '★ CSV 每行重复整局抽水、保险带入/结余/净额、输的流水与折扣');
   t.close();
 }
 
@@ -1634,7 +1635,7 @@ section('V. 本局抽水：系统角色 / 折扣 / 配平 / 兼容');
   t.close();
 }
 
-section('W. 保险：正负净额 / 计入流水 / 配平 / 兼容');
+section('W. 保险：带入/结余 / 计入流水 / 配平 / 兼容');
 {
   const t = boot();
   t.addPlayers(['老王', '小李']);
@@ -1647,41 +1648,49 @@ section('W. 保险：正负净额 / 计入流水 / 配平 / 兼容');
   t.set(t.$('inRake'), '50');
   ok(t.$('calcHint').textContent.includes('未平'), '保险未填时差 100 未平');
 
-  t.set(t.$('inInsurance'), '-100');
-  ok(t.$('calcHint').textContent.includes('已平衡'), '★ 保险赔 100 计入输方后配平');
+  // 保险带入 300、结余 200 → 净额 -100（赔付 100）
+  t.set(t.$('inInsBuy'), '300');
+  t.set(t.$('inInsBalance'), '200');
+  ok(t.$('calcHint').textContent.includes('已平衡'), '★ 保险净额 -100 计入输方后配平');
   ok(t.$('calcHint').textContent.includes('含保险'), '★ 提示里标明输的流水含保险');
   ok(t.$('calcHint').textContent.includes('80.00%'), '★ 折扣按含保险的输的流水算：1 − 50/250 = 80.00%');
 
   t.click(t.$('btnSaveGame'));
   const g = t.raw().ledgers[0].games[0];
-  eq([g.rake, g.insurance].join(','), '5000,-10000', '★ 抽水与有符号保险分别以整数分落盘');
+  eq([g.rake, g.insBuy, g.insBalance, g.insurance].join(','), '5000,30000,20000,-10000',
+     '★ 抽水与保险带入/结余以整数分落盘，净额 = 结余 − 带入');
   const text = t.$('gameList').textContent;
   ok(text.includes('保险（系统）'), '★ 明细里保险单独成系统行');
+  const insCells = t.qa('tr.system-row').map(tr =>
+    [...tr.children].map(td => td.textContent.trim()).join('|'));
+  ok(insCells.includes('保险（系统）|300|200|-100'), '★ 保险系统行显示带入 / 结余 / 净额');
   ok(text.includes('折扣 80.00%'), '★ 明细折扣同步为 80%');
   eq(t.qa('.rank-row').length, 2, '★ 保险不进排行榜人数');
   ok(t.qa('.rank-row')[0].textContent.includes('+200'), '★ 保险不摊薄玩家个人盈亏');
 
-  // 编辑回显 + ± 切符号
+  // 编辑回显
   t.win.openGameSheet(g.id);
-  eq(t.$('inInsurance').value, '-100', '★ 编辑回显保险净额（负数）');
-  t.set(t.$('inInsurance'), '100');
-  t.click(t.$('btnInsSign'));
-  eq(t.$('inInsurance').value, '-100', '★ ± 按钮把正数切成负数');
-  t.click(t.$('btnInsSign'));
-  eq(t.$('inInsurance').value, '100', '★ 再点一次切回正数');
+  eq([t.$('inInsBuy').value, t.$('inInsBalance').value].join('|'), '300|200',
+     '★ 编辑回显保险带入与结余');
 
   // 非法金额拒绝
   t.set(t.$('inRake'), '50');
   const before = t.seedRaw();
-  t.set(t.$('inInsurance'), 'abc');
+  t.set(t.$('inInsBuy'), '-1');
   t.click(t.$('btnSaveGame'));
-  eq(t.seedRaw(), before, '★ 非法保险金额拒绝保存，存档逐字节不变');
-  eq(t.doc.activeElement, t.$('inInsurance'), '★ 聚焦保险输入');
+  eq(t.seedRaw(), before, '★ 负数保险带入拒绝保存，存档逐字节不变');
+  eq(t.doc.activeElement, t.$('inInsBuy'), '★ 聚焦保险带入输入');
+  t.set(t.$('inInsBuy'), '300');
+  t.set(t.$('inInsBalance'), 'abc');
+  t.click(t.$('btnSaveGame'));
+  eq(t.seedRaw(), before, '★ 非法保险结余拒绝保存，存档逐字节不变');
+  eq(t.doc.activeElement, t.$('inInsBalance'), '★ 聚焦保险结余输入');
+  t.set(t.$('inInsBalance'), '200');
 
   // dirty 覆盖保险
   let asked = 0;
   t.win.confirm = () => { asked++; return false; };
-  t.set(t.$('inInsurance'), '150');
+  t.set(t.$('inInsBalance'), '150');
   t.click(t.q('#ovGame [data-close="ovGame"]'));
   eq(asked, 1, '★ 只改保险也算未保存修改，关闭时确认');
   t.win.confirm = () => true;
@@ -1694,8 +1703,8 @@ section('W. 保险：正负净额 / 计入流水 / 配平 / 兼容');
   csv.restore();
   const wangLine = csv.get().text.replace(/^﻿/, '').split('\r\n')
     .find(r => r.split(',')[1] === '老王');
-  eq(wangLine.split(',').slice(6).join(','), '50.00,-100.00,250.00,80.00%',
-     '★ CSV 每行带抽水、保险、输的流水与折扣');
+  eq(wangLine.split(',').slice(6).join(','), '50.00,300.00,200.00,-100.00,250.00,80.00%',
+     '★ CSV 每行带抽水、保险带入/结余/净额、输的流水与折扣');
   t.close();
 }
 
@@ -1708,18 +1717,18 @@ section('W. 保险：正负净额 / 计入流水 / 配平 / 兼容');
   t.fill(t.prows()[0], { buy: '200', value: '300' });
   t.fill(t.prows()[1], { buy: '200', value: '0' });
   ok(t.$('calcHint').textContent.includes('未平'), '无保险时差 100 未平');
-  t.set(t.$('inInsurance'), '100');
-  ok(t.$('calcHint').textContent.includes('已平衡'), '★ 保险收 100 计入赢方后配平');
+  t.set(t.$('inInsBalance'), '100');   // 带入留空=0，结余 100 → 净额 +100
+  ok(t.$('calcHint').textContent.includes('已平衡'), '★ 保险净额 +100 计入赢方后配平');
   ok(t.$('calcHint').textContent.includes('含保险'), '★ 赢方标注含保险');
   t.click(t.$('btnSaveGame'));
   const g = t.raw().ledgers[0].games[0];
-  eq(g.insurance, 10000, '★ 保险收入以 +10000 分落盘');
+  eq([g.insBuy, g.insBalance, g.insurance].join(','), '0,10000,10000', '★ 保险收入落盘为带入 0 / 结余 10000 / 净额 10000');
   ok(t.$('gameList').textContent.includes('保险（系统）'), '正数保险同样显示系统行');
   t.close();
 }
 
 {
-  // 旧牌局没有 insurance 字段：按 0 兼容
+  // 旧牌局完全没有保险字段：按 0 兼容
   const seed = {
     version: 1, currentId: 'L',
     ledgers: [{
@@ -1738,7 +1747,33 @@ section('W. 保险：正负净额 / 计入流水 / 配平 / 兼容');
   ok(!t.$('gameList').textContent.includes('保险（系统）'), '★ 无保险的老牌局不显示系统行');
   ok(!t.$('gameList').textContent.includes('含保险'), '★ 无保险的老牌局不显示含保险标注');
   t.win.openGameSheet('g1');
-  eq(t.$('inInsurance').value, '', '★ 旧牌局编辑时保险留空');
+  eq([t.$('inInsBuy').value, t.$('inInsBalance').value].join('|'), '|', '★ 旧牌局编辑时保险带入/结余留空');
+  t.win.closeSheet('ovGame', true);
+  t.close();
+}
+
+{
+  // v30 只有净额的牌局：迁移成一对非负的带入/结余，净额逐分不变
+  const seed = {
+    version: 1, currentId: 'L',
+    ledgers: [{
+      id: 'L', name: '旧账本',
+      players: [{ id: 'p1', name: '老王' }],
+      games: [{
+        id: 'g1', date: '2026-01-01', insurance: -10000,
+        entries: [{ playerId: 'p1', playerName: '老王', buys: [10000], balance: 20000 }],
+      }],
+    }],
+  };
+  const t = boot({ 'poker-ledger:v1': JSON.stringify(seed) });
+  eq(t.win.eval(`(() => { const s = gameStats(ledger().games[0]); return [s.insBuy, s.insBalance, s.insurance].join(','); })()`),
+     '10000,0,-10000', '★ 旧净额 -100 迁移为带入 100 / 结余 0，净额不变');
+  t.click(t.$('headGames'));
+  t.click(t.q('[data-toggle="g1"]'));
+  ok(t.$('gameList').textContent.includes('保险（系统）'), '迁移后仍显示保险系统行');
+  t.win.openGameSheet('g1');
+  eq([t.$('inInsBuy').value, t.$('inInsBalance').value].join('|'), '100|',
+     '★ 迁移后编辑回显带入 100、结余留空');
   t.win.closeSheet('ovGame', true);
   t.close();
 }

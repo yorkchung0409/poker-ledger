@@ -940,20 +940,26 @@
         <div class="field-hint">本局水钱，留空按 0 计。折扣 = 1 − 抽水 ÷ 输的流水。</div>
       </div>
 
-      <!-- ★ 保险：all-in 时领先方买保险，被反超由保险方赔付。
-           只记本局净额（多次 all-in 填合计）：正数 = 保险收钱，负数 = 保险赔钱。
-           用 ± 按钮切符号，避免手机上数字键盘没有负号。 -->
+      <!-- ★ 保险：all-in 时领先方买保险，被反超由保险方赔付（用筹码结算）。
+           和玩家一样记「带入 / 结余」：结束时数一下保险还剩多少筹码，
+           净额 = 结余 − 带入，自动计入这局流水，不用心算。 -->
       <div class="field">
-        <label class="label" for="inInsurance">保险（正=收，负=赔）</label>
+        <div class="label" style="margin-bottom:6px">保险（带入 / 结余）</div>
         <div style="display:flex; gap:8px">
-          <input class="input num" type="text" id="inInsurance" inputmode="decimal"
-                 placeholder="如 200 或 -200，留空按 0 计"
-                 style="flex:1"
-                 onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">
-          <button type="button" class="btn btn-ghost btn-sm" id="btnInsSign"
-                  style="flex-shrink:0" title="切换正负号">±</button>
+          <div style="flex:1; min-width:0">
+            <div class="field-hint" style="margin:0 0 4px">带入</div>
+            <input class="input num" type="text" id="inInsBuy" inputmode="decimal"
+                   placeholder="如 2000"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('inInsBalance').focus()}">
+          </div>
+          <div style="flex:1; min-width:0">
+            <div class="field-hint" style="margin:0 0 4px">结余</div>
+            <input class="input num" type="text" id="inInsBalance" inputmode="decimal"
+                   placeholder="如 1900"
+                   onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">
+          </div>
         </div>
-        <div class="field-hint">本局保险净额，计入这局流水；正数=保险收钱，负数=保险赔钱。</div>
+        <div class="field-hint">净额 = 结余 − 带入；正=保险收钱，负=保险赔钱，计入这局流水。</div>
       </div>
 
       <!-- ★ 提示条放在「说明文字」前面。
@@ -966,7 +972,7 @@
       <div class="note">
         <b>抽水</b> = 本局固定系统角色收取的水钱；配平按「赢方合计 + 抽水 = 输方合计」，
         折扣 = <b>1 − 抽水 ÷ 输的流水</b>（赢家实得比例，如抽水 20% → 折扣 80%）。<br>
-        <b>保险</b> = all-in 时领先方买保险、被反超由保险方赔付；这里只记本局净额（正=保险收，负=保险赔），计入流水。<br>
+        <b>保险</b> = all-in 时领先方买保险、被反超由保险方赔付（用筹码结算）；记保险的「带入 / 结余」，净额 = 结余 − 带入，计入流水。<br>
         <b>买入</b> = 往牌桌上放的本金（上桌带的钱、中途再加的筹码，都是买入，性质完全一样）。
         每次填新金额后按 <b>回车</b> 或点 <b>+</b>，就记一笔进明细 —— <b>结余不受影响</b>，
         所以「这些钱是本金」这件事不会被算成输赢。<br>
@@ -1282,7 +1288,17 @@ function validateState(input) {
         && Number.isFinite(Date.parse(g.date)) && new Date(g.date).toISOString().slice(0, 10) === g.date, '牌局日期无效');
       if (g.buyDefault !== undefined) { money(g.buyDefault); need(g.buyDefault >= 0, '默认买入不能为负'); }
       if (g.rake !== undefined) { money(g.rake); need(g.rake >= 0, '抽水不能为负'); }
-      if (g.insurance !== undefined) { money(g.insurance); }
+      // 保险：新数据记「带入 / 结余」，净额派生；旧数据只有 insurance 净额时，
+      // 迁移成一对非负的带入/结余（正净额→带入0，负净额→结余0），净额逐分不变。
+      let insBuy = 0, insBalance = 0;
+      if (g.insBuy !== undefined || g.insBalance !== undefined) {
+        if (g.insBuy !== undefined) { money(g.insBuy); need(g.insBuy >= 0, '保险带入不能为负'); insBuy = g.insBuy; }
+        if (g.insBalance !== undefined) { money(g.insBalance); insBalance = g.insBalance; }
+      } else if (g.insurance !== undefined) {
+        money(g.insurance);
+        if (g.insurance >= 0) { insBuy = 0; insBalance = g.insurance; }
+        else { insBuy = -g.insurance; insBalance = 0; }
+      }
       const seen = new Set();
       const entries = array(g.entries, '牌局明细').map(e => {
         need(obj(e) && id(e.playerId) && !seen.has(e.playerId), '明细人员 ID 无效或重复');
@@ -1306,7 +1322,7 @@ function validateState(input) {
         return { playerId: e.playerId, playerName: text(e.playerName, p ? p.name : '（未命名）'), buys, balance };
       });
       return { id: g.id, date: g.date, buyDefault: g.buyDefault || 0, rake: g.rake === undefined ? 0 : g.rake,
-        insurance: g.insurance === undefined ? 0 : g.insurance, entries,
+        insBuy, insBalance, insurance: insBalance - insBuy, entries,
         createdAt: text(g.createdAt, ''), updatedAt: text(g.updatedAt, ''), ...(g._open === true ? { _open: true } : {}) };
     });
     return { id: l.id, name: text(l.name, '（未命名账本）'), players: cleanPlayers, games: cleanGames,
@@ -1523,16 +1539,26 @@ function gameStats(g) {
     else if (e.netProfit < 0) pLoss += -e.netProfit;
   }
   const rake = Number.isSafeInteger(g.rake) && g.rake >= 0 ? g.rake : 0;
-  // ★ 保险按「参与流水的系统角色」处理：正数算赢方，负数算输方。
+  // ★ 保险按「参与流水的系统角色」处理：净额 = 结余 − 带入，正数算赢方、负数算输方。
   //   这样「赢方合计 + 抽水 = 输方合计」这条配平规则不用再开特例，
   //   玩家 400 / 保险赔 200 时输的流水就是 600，和明细表整列归零对得上。
-  const insurance = Number.isSafeInteger(g.insurance) ? g.insurance : 0;
+  let insBuy = Number.isSafeInteger(g.insBuy) ? g.insBuy : 0;
+  let insBalance = Number.isSafeInteger(g.insBalance) ? g.insBalance : 0;
+  let insurance;
+  if (g.insBuy !== undefined || g.insBalance !== undefined) {
+    insurance = insBalance - insBuy;
+  } else {
+    // 旧对象只有净额：折算成一对非负的带入/结余，保证展示与计算一致
+    insurance = Number.isSafeInteger(g.insurance) ? g.insurance : 0;
+    insBuy = insurance >= 0 ? 0 : -insurance;
+    insBalance = insurance >= 0 ? insurance : 0;
+  }
   const win = pWin + (insurance > 0 ? insurance : 0);
   const loss = pLoss + (insurance < 0 ? -insurance : 0);
   const balanced = pending === 0 && win + rake === loss;
   // 折扣 = 1 − 抽水 ÷ 输的流水，即赢家实得比例（抽水 20% → 折扣 80%）
   const discount = loss > 0 ? (1 - rake / loss) * 100 : null;
-  return { win, loss, pWin, pLoss, rake, insurance, discount, pending, flow: loss, diff: win + rake - loss, balanced };
+  return { win, loss, pWin, pLoss, rake, insBuy, insBalance, insurance, discount, pending, flow: loss, diff: win + rake - loss, balanced };
 }
 
 function sortedGames() {
@@ -1811,10 +1837,10 @@ function renderGames() {
               <td class="r num">—</td>
               <td class="r num">+${fmtCompact(st.rake)}</td>
             </tr>` : ''}
-            ${st.insurance !== 0 ? `<tr class="system-row">
+            ${st.insurance !== 0 || st.insBuy !== 0 || st.insBalance !== 0 ? `<tr class="system-row">
               <td>保险（系统）</td>
-              <td class="r num">—</td>
-              <td class="r num">—</td>
+              <td class="r num">${fmtCompact(st.insBuy)}</td>
+              <td class="r num">${fmtCompact(st.insBalance)}</td>
               <td class="r num">${st.insurance > 0 ? '+' : ''}${fmtCompact(st.insurance)}</td>
             </tr>` : ''}
           </tbody>
@@ -1858,8 +1884,10 @@ function openGameSheet(gameId) {
     g && Number.isFinite(g.buyDefault) && g.buyDefault > 0 ? String(g.buyDefault / 100) : '';
   document.getElementById('inRake').value =
     g && Number.isFinite(g.rake) && g.rake > 0 ? String(g.rake / 100) : '';
-  document.getElementById('inInsurance').value =
-    g && Number.isFinite(g.insurance) && g.insurance !== 0 ? String(g.insurance / 100) : '';
+  document.getElementById('inInsBuy').value =
+    g && Number.isFinite(g.insBuy) && g.insBuy !== 0 ? String(g.insBuy / 100) : '';
+  document.getElementById('inInsBalance').value =
+    g && Number.isFinite(g.insBalance) && g.insBalance !== 0 ? String(g.insBalance / 100) : '';
 
   rows = g
     ? entriesOf(g).map(e => ({
@@ -2211,14 +2239,22 @@ function updateCalc() {
     box.innerHTML = `<span>${Number.isNaN(rake) ? '抽水金额格式有误（最多两位小数）' : '抽水不能为负'}</span>`;
     return false;
   }
-  // 保险是净额，可正可负：正=保险收钱，负=保险赔钱
-  const insuranceText = document.getElementById('inInsurance').value;
-  const insurance = parseCents(insuranceText);
-  if (Number.isNaN(insurance)) {
+  // 保险：带入 / 结余 → 净额 = 结余 − 带入（正=保险收钱，负=保险赔钱）
+  const insBuyText = document.getElementById('inInsBuy').value;
+  const insBuy = parseCents(insBuyText);
+  if (Number.isNaN(insBuy) || insBuy < 0) {
     box.className = 'calc-hint bad';
-    box.innerHTML = '<span>保险金额格式有误（最多两位小数，可正可负）</span>';
+    box.innerHTML = `<span>${Number.isNaN(insBuy) ? '保险带入格式有误（最多两位小数）' : '保险带入不能为负'}</span>`;
     return false;
   }
+  const insBalanceText = document.getElementById('inInsBalance').value;
+  const insBalance = parseCents(insBalanceText);
+  if (Number.isNaN(insBalance)) {
+    box.className = 'calc-hint bad';
+    box.innerHTML = '<span>保险结余格式有误（最多两位小数）</span>';
+    return false;
+  }
+  const insurance = insBalance - insBuy;
 
   if (res.error) {
     box.className = 'calc-hint bad';
@@ -2302,10 +2338,15 @@ function updateCalc() {
       ? '<span class="pending-tip">差额可能来自抽水或保险，若本局有请填写</span>'
       : '');
 
+  const insTip = insBuy > 0 && String(insBalanceText).trim() === ''
+    ? '<span class="pending-tip">保险结余未填，已按 0 计（等于全部赔付）</span>'
+    : '';
+
   box.innerHTML = `
     ${flow}
     ${pendingTip}
-    ${rakeTip}`;
+    ${rakeTip}
+    ${insTip}`;
   return true;
 }
 
@@ -2350,23 +2391,31 @@ function saveGame() {
     document.getElementById('inRake').focus();
     return;
   }
-  const rawInsurance = parseCents(document.getElementById('inInsurance').value);
-  if (!Number.isSafeInteger(rawInsurance)) {
-    toast('保险金额格式有误（最多两位小数，可正可负）');
-    document.getElementById('inInsurance').focus();
+  const rawInsBuy = parseCents(document.getElementById('inInsBuy').value);
+  if (!Number.isSafeInteger(rawInsBuy) || rawInsBuy < 0) {
+    toast(Number.isNaN(rawInsBuy) ? '保险带入格式有误（最多两位小数）' : '保险带入不能为负');
+    document.getElementById('inInsBuy').focus();
+    return;
+  }
+  const rawInsBalance = parseCents(document.getElementById('inInsBalance').value);
+  if (!Number.isSafeInteger(rawInsBalance)) {
+    toast('保险结余格式有误（最多两位小数）');
+    document.getElementById('inInsBalance').focus();
     return;
   }
   const buyDefault = rawDefault;
   const rake = rawRake;
-  const insurance = rawInsurance;
+  const insBuy = rawInsBuy;
+  const insBalance = rawInsBalance;
+  const insurance = insBalance - insBuy;
   const editing = editGameId;
   if (editing && !l.games.some(g => g.id === editing)) { toast('这场牌局已不存在'); return; }
   if (!changeState((state, target) => {
     if (editing) {
       const g = target.games.find(g => g.id === editing);
-      Object.assign(g, { date, buyDefault, rake, insurance, entries: stored, updatedAt: new Date().toISOString() });
+      Object.assign(g, { date, buyDefault, rake, insBuy, insBalance, insurance, entries: stored, updatedAt: new Date().toISOString() });
     } else {
-      target.games.push({ id: uid(), date, buyDefault, rake, insurance, entries: stored,
+      target.games.push({ id: uid(), date, buyDefault, rake, insBuy, insBalance, insurance, entries: stored,
         createdAt: new Date().toISOString(), _open: true });
     }
   })) return;
@@ -2595,7 +2644,8 @@ function canonicalSheetState() {
     date: document.getElementById('inDate').value || '',
     buyDefault: document.getElementById('inBuyDefault').value.trim(),
     rake: document.getElementById('inRake').value.trim(),
-    insurance: document.getElementById('inInsurance').value.trim(),
+    insBuy: document.getElementById('inInsBuy').value.trim(),
+    insBalance: document.getElementById('inInsBalance').value.trim(),
     rows: rowState,
   });
 }
@@ -2724,7 +2774,7 @@ function exportCsv() {
     if (/^[\s\u0000-\u001f]*[=+\-@]/.test(v)) v = "'" + v;
     return /[",\r\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
   };
-  const head = ['日期', '人员', '买入', '总买入', '结余', '净盈亏', '本局抽水', '本局保险', '输的流水', '折扣'];
+  const head = ['日期', '人员', '买入', '总买入', '结余', '净盈亏', '本局抽水', '保险带入', '保险结余', '保险净额', '输的流水', '折扣'];
   const lines = [head.join(',')];
   for (const g of l.games) {
     const entries = entriesOf(g);
@@ -2739,6 +2789,8 @@ function exportCsv() {
         e.balance === null ? '' : fmtCents(e.balance),
         e.netProfit === null ? '' : fmtCents(e.netProfit),
         fmtCents(st.rake),
+        fmtCents(st.insBuy),
+        fmtCents(st.insBalance),
         fmtCents(st.insurance),
         fmtCents(st.loss),
         discount,
@@ -2869,15 +2921,8 @@ document.getElementById('gameList').addEventListener('click', e => {
 const NUMERIC_FIELDS = ['buy', 'value'];
 
 document.getElementById('inRake').addEventListener('input', updateCalc);
-document.getElementById('inInsurance').addEventListener('input', updateCalc);
-// ± ：手机数字键盘通常没有负号，用按钮切符号，避免「赔钱却填不进去」
-document.getElementById('btnInsSign').addEventListener('click', () => {
-  const el = document.getElementById('inInsurance');
-  const v = el.value.trim();
-  if (!v) return;
-  el.value = v.startsWith('-') ? v.slice(1) : (v.startsWith('+') ? v.slice(1) : '-' + v);
-  updateCalc();
-});
+document.getElementById('inInsBuy').addEventListener('input', updateCalc);
+document.getElementById('inInsBalance').addEventListener('input', updateCalc);
 
 document.getElementById('rowZone').addEventListener('input', e => {
   const i = e.target.dataset.i;
