@@ -887,7 +887,7 @@
         <span class="fold-arrow">▸</span>
         排行榜 <span class="section-count" id="rankCount"></span>
       </div>
-      <span class="fold-hint" id="rankHint">点开</span>
+      <span class="fold-hint">点开</span>
     </button>
     <div class="card fold-body" id="rankList"></div>
   </div>
@@ -898,7 +898,7 @@
         <span class="fold-arrow">▸</span>
         牌局记录 <span class="section-count" id="gameCount"></span>
       </div>
-      <span class="fold-hint" id="gamesHint">点开</span>
+      <span class="fold-hint">点开</span>
     </button>
     <div class="fold-body" id="gameList"></div>
   </div>
@@ -1411,18 +1411,26 @@ function load() {
   }
 }
 
-/** 导出损坏原件（供用户抢救或反馈） */
-function exportBroken() {
-  if (!brokenRaw) return;
-  const blob = new Blob([brokenRaw], { type: 'application/json' });
+/**
+ * 统一的文本下载。原样收敛 5 处导出里重复的 Blob/createObjectURL/临时 <a> 样板，
+ * 参数与调用顺序不变，Blob 内容与 MIME 也保持一致。
+ */
+function downloadText(text, filename, mime) {
+  const blob = new Blob([text], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `扑克记分房-损坏存档-${brokenAt.slice(0, 10)}.json`;
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** 导出损坏原件（供用户抢救或反馈） */
+function exportBroken() {
+  if (!brokenRaw) return;
+  downloadText(brokenRaw, `扑克记分房-损坏存档-${brokenAt.slice(0, 10)}.json`, 'application/json');
   toast('损坏的原始存档已导出，可发给开发者尝试修复');
 }
 
@@ -1457,13 +1465,7 @@ function exportAudit() {
   let raw = '[]';
   try { raw = localStorage.getItem(AUDIT_KEY) || '[]'; } catch (e) { /* 空日志 */ }
   try {
-    const blob = new Blob([raw], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `扑克记分房-操作记录-${todayStr()}.json`;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    downloadText(raw, `扑克记分房-操作记录-${todayStr()}.json`, 'application/json');
     toast('金额操作记录已导出');
   } catch (e) { toast('导出失败，请检查存储权限'); }
 }
@@ -1479,13 +1481,9 @@ function downloadArchive(key) {
   try {
     const raw = localStorage.getItem(key);
     if (raw === null) { toast('副本不可读取'); return; }
-    const blob = new Blob([raw], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `扑克记分房-${archiveLabel(key)}-${key.split(':').slice(3).join('-').replace(/[^A-Za-z0-9_-]/g, '-')}.json`;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    downloadText(raw,
+      `扑克记分房-${archiveLabel(key)}-${key.split(':').slice(3).join('-').replace(/[^A-Za-z0-9_-]/g, '-')}.json`,
+      'application/json');
     toast('恢复副本已导出；有效备份可通过恢复按钮导入');
   } catch (e) { toast('副本读取失败，请检查存储权限'); }
 }
@@ -1499,7 +1497,6 @@ function renderRecoveryList() {
     keys.forEach(key => {
       const btn = document.createElement('button');
       btn.className = 'btn btn-ghost btn-block btn-sm';
-      btn.dataset.archive = key;
       btn.style.marginTop = '7px';
       const prefix = key.startsWith(BROKEN_PREFIX) ? BROKEN_PREFIX
         : (key.startsWith(MIGRATE_PREFIX) ? MIGRATE_PREFIX : IMPORT_PREFIX);
@@ -2127,7 +2124,7 @@ function renderGames() {
     const es = entriesOf(g);
     const isOpen = g._open;
     return `
-    <div class="card game" data-game="${esc(g.id)}">
+    <div class="card game">
       <div class="game-head" data-toggle="${esc(g.id)}">
         <div class="game-left">
           <span class="game-date num">${esc(g.date)}</span>
@@ -2248,7 +2245,6 @@ function openGameSheet(gameId) {
     //   现在统一从空表开始，用「+ 选择人员上场」逐个把到场的人加进来。
     : [];
 
-  // 编辑时把不在当前人员列表里的历史成员补回选项，避免数据丢失
   renderRows();
   updateCalc();
   sheetSnapshot = canonicalSheetState();
@@ -2920,17 +2916,11 @@ function delLedger() {
 function exportData() {
   // 用 serializable 剥离 UI 临时状态，备份文件只含业务数据
   const payload = JSON.stringify(serializable(db), null, 2);
-  const blob = new Blob([payload], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
   const p = n => String(n).padStart(2, '0');
   const d = new Date();
-  a.href = url;
-  a.download = `扑克记分房备份-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.json`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  downloadText(payload,
+    `扑克记分房备份-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}.json`,
+    'application/json');
   toast('备份文件已导出');
 }
 
@@ -3119,8 +3109,8 @@ document.getElementById('btnHealthApply').onclick = () => {
   toast(r.moved ? `已迁移 ${r.moved} 条${r.skipped ? `，跳过 ${r.skipped} 条` : ''}` : '没有可迁移的记录', 3200);
 };
 
-// 存储告警条的两个按钮
-document.getElementById('btnAlertExport').onclick = exportBroken;
+// 告警条的「导出」按钮由 renderAlertBar 按当前告警类型动态绑定；
+// 这里只需要处理「知道了」。
 document.getElementById('btnAlertDismiss').onclick = () => {
   // 损坏原件只在内存里时，关掉提示再刷新就再也导不出来了 —— 必须二次确认
   if (brokenRaw && !brokenArchived
@@ -3217,17 +3207,10 @@ function exportCsv() {
     return;
   }
   const csv = '\uFEFF' + lines.join('\r\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
   const p = n => String(n).padStart(2, '0');
   const d = new Date();
-  a.href = url;
-  a.download = `${l.name}-牌局明细-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.csv`;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  downloadText(csv, `${l.name}-牌局明细-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}.csv`,
+    'text/csv;charset=utf-8');
   toast('Excel 明细已导出（金额保留两位小数）');
 }
 
