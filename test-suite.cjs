@@ -1946,6 +1946,326 @@ section('X. 历史数据体检：旧「抽水/保险」人员迁移到牌局字�
   t.close();
 }
 
+section('Y. 金额安全加固：审查发现的错账缺口');
+{
+  const KEY = 'poker-ledger:v1';
+  const base = () => ({ version: 1, currentId: 'L', ledgers: [{
+    id: 'L', name: 'T', players: [{ id: 'p1', name: '老王' }, { id: 'p2', name: '小李' }], games: [],
+  }] });
+  const enter = t => {
+    t.click(t.$('btnAddGame')); t.click(t.$('btnAddRow'));
+    for (const n of ['老王', '小李']) t.click(t.qa('#pickList .pick').find(b => b.textContent.includes(n)));
+    t.click(t.$('btnConfirmPick'));
+  };
+  const fill = (t, i, b, v) => {
+    t.set(t.field(t.prows()[i], 'buy'), b); t.win.doBuy(i);
+    t.set(t.field(t.prows()[i], 'value'), v);
+  };
+  const strict = (t, state) => t.win.eval(
+    `(() => { try { validateState(${JSON.stringify(state)}); return 'ok'; } catch (e) { return e.message; } })()`);
+
+  // ---- P0-1 玩家结余负数 ----
+  {
+    const t = boot({ [KEY]: JSON.stringify(base()) });
+    enter(t); fill(t, 0, '200', '300'); fill(t, 1, '200', '-50');
+    ok(t.$('calcHint').textContent.includes('结余不能为负数'), '★ 负结余当场报错');
+    const before = t.seedRaw();
+    t.click(t.$('btnSaveGame'));
+    eq(t.seedRaw(), before, '★ 负结余保存被拒，存档逐字节不变');
+    ok(t.$('ovGame').classList.contains('show'), '负结余时录入面板不关闭');
+    eq(t.doc.activeElement, t.field(t.prows()[1], 'value'), '★ 聚焦出错的结余框');
+    const bad = base();
+    bad.ledgers[0].games = [{ id: 'g', date: '2026-01-01', entries: [
+      { playerId: 'p1', playerName: '老王', buys: [10000], balance: -5000 }] }];
+    eq(strict(t, bad), '结余不能为负', '★ 导入严格拒绝负结余');
+    t.close();
+  }
+  {
+    // 兼容：旧存档里的负结余仍可读，不能被判成损坏换成空白账本
+    const s = base();
+    s.ledgers[0].games = [{ id: 'g', date: '2026-01-01', entries: [
+      { playerId: 'p1', playerName: '老王', buys: [10000], balance: -5000 }] }];
+    const t = boot({ [KEY]: JSON.stringify(s) });
+    eq(t.win.eval('ledger().games[0].entries[0].balance'), -5000, '★ 旧档负结余仍可读取');
+    eq(t.win.eval('brokenRaw'), null, '★ 旧档负结余不触发损坏保护');
+    t.close();
+  }
+
+  // ---- P0-2 保险结余负数 ----
+  {
+    const t = boot({ [KEY]: JSON.stringify(base()) });
+    enter(t); fill(t, 0, '200', '400'); fill(t, 1, '200', '100');
+    ok(t.$('calcHint').textContent.includes('差 ¥100.00 未平'), '负保险结余修复前：本该未平');
+    t.set(t.$('inInsBuy'), '0'); t.set(t.$('inInsBalance'), '-100');
+    ok(t.$('calcHint').textContent.includes('保险结余不能为负'), '★ 负保险结余当场报错');
+    ok(!t.$('calcHint').textContent.includes('已平衡'), '★ 不再出现凭空配平');
+    const before = t.seedRaw();
+    t.click(t.$('btnSaveGame'));
+    eq(t.seedRaw(), before, '★ 负保险结余保存被拒');
+    eq(t.doc.activeElement, t.$('inInsBalance'), '★ 聚焦保险结余框');
+    const bad = base();
+    bad.ledgers[0].games = [{ id: 'g', date: '2026-01-01', insBuy: 0, insBalance: -10000, entries: [] }];
+    eq(strict(t, bad), '保险结余不能为负', '★ 导入严格拒绝负保险结余');
+    t.close();
+  }
+
+  // ---- P1-4 金额上限口径统一 ----
+  {
+    const t = boot({ [KEY]: JSON.stringify(base()) });
+    const cap = t.win.eval('MONEY_CAP');
+    eq(t.win.parseCents('10000000000.00'), cap, '★ 上限内金额正常解析');
+    ok(Number.isNaN(t.win.parseCents('10000000000.01')), '★ 超过 1e12 分返回 NaN（不再放行到保存阶段）');
+    enter(t);
+    t.set(t.field(t.prows()[0], 'buy'), '10000000000.01');
+    t.win.updateCalc();
+    ok(t.$('calcHint').textContent.includes('金额格式有误'), '★ 录入阶段即提示金额错误');
+    const before = t.seedRaw();
+    t.click(t.$('btnSaveGame'));
+    eq(t.seedRaw(), before, '★ 越界金额不落盘');
+    t.close();
+  }
+
+  // ---- P0-3 多窗口并发 ----
+  {
+    const t = boot({ [KEY]: JSON.stringify(base()) });
+    t.click(t.$('btnPlayers')); t.set(t.$('inPlayerName'), '甲'); t.click(t.$('btnAddPlayer'));
+    ok(t.win.eval('ledger().players.some(p => p.name === "甲")'), '正常保存不受影响');
+    const other = t.raw(); other.ledgers[0].name = '外部窗口改名';
+    t.store.set(KEY, JSON.stringify(other));   // 模拟另一窗口写入
+    t.click(t.$('btnPlayers')); t.set(t.$('inPlayerName'), '乙'); t.click(t.$('btnAddPlayer'));
+    ok(!t.win.eval('ledger().players.some(p => p.name === "乙")'), '★ 检测到冲突后拒绝覆盖写入');
+    ok(t.$('alertTitle').textContent.includes('其它窗口'), '★ 提示其它窗口已更新');
+    ok(!t.$('alertBar').hidden, '★ 冲突告警条可见');
+    t.close();
+  }
+  {
+    const t = boot({ [KEY]: JSON.stringify(base()) });
+    t.win.dispatchEvent(new t.win.StorageEvent('storage', { key: KEY, oldValue: 'a', newValue: 'b' }));
+    ok(t.$('alertTitle').textContent.includes('其它窗口'), '★ storage 事件立即提示冲突');
+    const before = t.seedRaw();
+    t.click(t.$('btnPlayers')); t.set(t.$('inPlayerName'), '丙'); t.click(t.$('btnAddPlayer'));
+    eq(t.seedRaw(), before, '★ 收到冲突事件后不再保存');
+    t.close();
+  }
+
+  // ---- P1-5 CSV 牌局级列只写一次 ----
+  {
+    const g = { id: 'g', date: '2026-01-01', rake: 1000, entries: ['a', 'b', 'c', 'd'].map((id, i) => ({
+      playerId: id, playerName: id, buys: [10000], balance: i % 2 ? 9000 : 11000 })) };
+    const s = base();
+    s.ledgers[0].players = ['a', 'b', 'c', 'd'].map(id => ({ id, name: id }));
+    s.ledgers[0].games = [g];
+    const t = boot({ [KEY]: JSON.stringify(s) });
+    const csv = t.captureBlob();
+    t.click(t.$('btnData')); t.click(t.$('btnExportCsv')); csv.restore();
+    const lines = csv.get().text.replace(/^\uFEFF/, '').split('\r\n').filter(Boolean);
+    const head = lines[0].split(',');
+    const vals = lines.slice(1).map(l => l.split(',')[head.indexOf('本局抽水')]);
+    eq(vals.filter(Boolean).length, 1, '★ 4 人局的抽水列只有 1 个非空单元格');
+    eq(vals.filter(Boolean)[0], '10.00', '★ 该单元格为真实抽水金额');
+    eq(lines.slice(1).reduce((n, l) => n + Number(l.split(',')[head.indexOf('输的流水')] || 0), 0),
+       20, '★ Excel 求和不会按人数翻倍（列单位是元）');
+    t.close();
+  }
+
+  // ---- P1-6 排行榜同名归并 ----
+  {
+    const s = base();
+    // 「老王」旧 id 已删、只剩历史明细；人员表里是重建的同名新人
+    s.ledgers[0].players = [{ id: 'new', name: '老王' }, { id: 'p2', name: '小李' }];
+    s.ledgers[0].games = [
+      { id: 'g1', date: '2026-01-01', entries: [{ playerId: 'old', playerName: '老王', buys: [10000], balance: 20000 }] },
+      { id: 'g2', date: '2026-01-02', entries: [{ playerId: 'new', playerName: '老王', buys: [10000], balance: 15000 }] },
+    ];
+    const t = boot({ [KEY]: JSON.stringify(s) });
+    eq(t.win.eval('leaderboard().length'), 2, '老王与小李共两行（不是三行）');
+    eq(t.win.eval('leaderboard().find(r => r.name === "老王").net'), 15000,
+       '★ 删旧建新的同名人员合并为一行，盈亏相加');
+    ok(!t.win.eval('leaderboard().filter(r => r.name === "老王").length > 1'), '★ 不再出现两个同名行');
+    t.close();
+  }
+
+  // ---- P1-7 导入异步竞态 ----
+  {
+    const t = boot({ [KEY]: JSON.stringify(base()) });
+    let reader;
+    t.win.FileReader = class { constructor() { reader = this; } readAsText() {} };
+    let answers = [true, false];
+    t.win.confirm = () => answers.shift();
+    const inp = t.$('fileImport');
+    Object.defineProperty(inp, 'files', { configurable: true, value: [{}] });
+    inp.dispatchEvent(new t.win.Event('change', { bubbles: true }));
+    ok(!!reader, '选文件后创建了读取器');
+    const other = t.raw(); other.ledgers[0].name = '读取期间新增的改动';
+    t.store.set(KEY, JSON.stringify(other));
+    const backup = base(); backup.ledgers[0].name = '备份文件';
+    reader.result = JSON.stringify(backup);
+    reader.onload();
+    eq(t.raw().ledgers[0].name, '读取期间新增的改动', '★ 选择文件后的新改动不会被静默覆盖');
+    eq(answers.length, 0, '★ 弹出了二次确认');
+    t.close();
+  }
+
+  // ---- P1-8 损坏原件 dismiss 保护 ----
+  {
+    const t = boot({ [KEY]: 'not-json' }, { failSetItem: k => k.startsWith('poker-ledger:v1:broken:') });
+    eq(t.win.eval('brokenArchived'), false, '副本写入失败');
+    ok(t.$('alertTitle').textContent.includes('未能另存'), '提示原件未另存');
+    t.win.confirm = () => false;
+    t.click(t.$('btnAlertDismiss'));
+    ok(!t.$('alertBar').hidden, '★ 未确认时告警条不关闭');
+    t.win.confirm = () => true;
+    t.click(t.$('btnAlertDismiss'));
+    ok(t.$('alertBar').hidden, '明确确认后才允许关闭');
+    t.close();
+  }
+
+  // ---- P2 展示与口径 ----
+  {
+    const t = boot({ [KEY]: JSON.stringify(base()) });
+    eq(t.win.fmtYuan(-1), '-0.01', '★ 不足 1 元的亏损不再显示成 -0');
+    eq(t.win.fmtCompact(NaN), '?', '★ NaN 不显示成 NaN.NaN');
+    eq(t.win.eval('gameStats({rake:5000,entries:[{playerId:"a",buys:[10000],balance:8000},{playerId:"b",buys:[10000],balance:10000}]}).discount'),
+       null, '★ 抽水大于流水时折扣为 null，不出现负百分比');
+    enter(t); fill(t, 0, '100', '80'); fill(t, 1, '100', '100');
+    t.set(t.$('inRake'), '50');
+    ok(t.$('calcHint').textContent.includes('抽水超过输的流水'), '★ 录入提示说明折扣为何无法计算');
+    t.close();
+  }
+  {
+    // 角分：明细行盈亏按两位小数显示，与总买入/结余对得上
+    const s = base();
+    s.ledgers[0].games = [{ id: 'g', date: '2026-01-01', entries: [
+      { playerId: 'p1', playerName: '老王', buys: [10050], balance: 10000 }] }];
+    const t = boot({ [KEY]: JSON.stringify(s) });
+    t.click(t.$('headGames')); t.click(t.q('[data-toggle="g"]'));
+    const row = t.qa('.game-body tr').find(tr => tr.textContent.includes('老王'));
+    ok(row && row.textContent.includes('-0.50'), '★ 明细盈亏保留角分，不再四舍五入成 -1');
+    t.close();
+  }
+  {
+    // 排行榜：有已结算场次且打平，即使还有未结算也不能显示"未结算"
+    const s = base();
+    s.ledgers[0].games = [{ id: 'g', date: '2026-01-01', entries: [
+      { playerId: 'p1', playerName: '老王', buys: [10000], balance: 20000 },
+      { playerId: 'p2', playerName: '小李', buys: [10000], balance: 0 },
+      { playerId: 'p1', playerName: '老王', buys: [10000] },
+    ]}];
+    // 同一 id 一行两笔不被 validateState 允许，改成两场
+    s.ledgers[0].games = [
+      { id: 'g1', date: '2026-01-01', entries: [
+        { playerId: 'p1', playerName: '老王', buys: [10000], balance: 20000 },
+        { playerId: 'p2', playerName: '小李', buys: [10000], balance: 0 }] },
+      { id: 'g2', date: '2026-01-02', entries: [
+        { playerId: 'p1', playerName: '老王', buys: [10000] }] },
+    ];
+    const t = boot({ [KEY]: JSON.stringify(s) });
+    const row = t.qa('.rank-row').find(r => r.textContent.includes('老王'));
+    ok(row && row.textContent.includes('+100.00'), '★ 已结算打平显示真实数值，不被未结算吞掉');
+    t.close();
+  }
+
+  // ---- P2 改派 / 双源 / 负买入 ----
+  {
+    const s = base();
+    s.ledgers[0].games = [{ id: 'g', date: '2026-01-01', entries: [
+      { playerId: 'p1', playerName: '老王', buys: [10000], balance: 30000 }] }];
+    const t = boot({ [KEY]: JSON.stringify(s) });
+    t.win.openGameSheet('g');
+    const sel = t.q('.prow select');
+    sel.value = 'p2';
+    sel.dispatchEvent(new t.win.Event('change', { bubbles: true }));
+    t.click(t.$('btnSaveGame'));
+    const e = t.raw().ledgers[0].games[0].entries[0];
+    eq(e.playerId, 'p2', '★ 改派后 playerId 更新');
+    eq(e.playerName, '小李', '★ 改派后姓名快照同步');
+    eq([e.buys[0], e.balance].join(','), '10000,30000', '★ 改派不丢买入与结余');
+    t.close();
+  }
+  {
+    const t = boot({ [KEY]: JSON.stringify(base()) });
+    enter(t);
+    const el = t.field(t.prows()[0], 'buy');
+    el.value = '100';
+    el.dispatchEvent(new t.win.Event('change', { bubbles: true }));  // 模拟自动填充
+    fill(t, 1, '0', '0');
+    t.click(t.$('btnSaveGame'));
+    eq(t.raw().ledgers[0].games[0].entries[0].buys[0], 10000,
+       '★ change 回读让自动填充的买入不漏记');
+    t.close();
+  }
+  {
+    const t = boot({ [KEY]: JSON.stringify(base()) });
+    enter(t);
+    const el = t.field(t.prows()[0], 'buy');
+    t.set(el, '-5');
+    el.dispatchEvent(new t.win.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    ok(t.$('toast').textContent.includes('买入金额不能为负数'), '★ 负买入按回车明确报错');
+    eq(t.doc.activeElement, el, '★ 负买入不跳到结余框');
+    t.close();
+  }
+
+  // ---- P2 审计日志 / changeState 异常 ----
+  {
+    const t = boot({ [KEY]: JSON.stringify(base()) });
+    enter(t); fill(t, 0, '200', '300'); fill(t, 1, '200', '50');
+    t.click(t.$('btnSaveGame'));
+    let log = JSON.parse(t.store.get('poker-ledger:v1:audit'));
+    eq(log.length, 1, '★ 新建牌局写入审计记录');
+    eq(log[0].action, '新建牌局', '★ 记录操作类型');
+    eq(log[0].after.entries.length, 2, '★ 记录变更后金额明细');
+    const gid = log[0].gameId;
+    t.win.openGameSheet(gid);
+    t.set(t.field(t.prows()[0], 'value'), '400');
+    t.click(t.$('btnSaveGame'));
+    log = JSON.parse(t.store.get('poker-ledger:v1:audit'));
+    eq(log[0].action, '更新牌局', '★ 编辑写入更新记录');
+    ok(log[0].before && log[0].before.entries[0].balance === 30000, '★ 记录修改前的结余');
+    const csv = t.captureBlob();
+    t.click(t.$('btnData')); t.click(t.$('btnAuditExport')); csv.restore();
+    ok(csv.get().text.includes('更新牌局'), '★ 审计记录可导出');
+    t.win.closeSheet('ovData', true);
+    t.close();
+  }
+  {
+    const t = boot({ [KEY]: JSON.stringify(base()) }, { failSetItem: k => k === 'poker-ledger:v1:audit' });
+    enter(t); fill(t, 0, '200', '300'); fill(t, 1, '200', '50');
+    t.click(t.$('btnSaveGame'));
+    eq(t.raw().ledgers[0].games.length, 1, '★ 审计写入失败不影响主存档');
+    t.close();
+  }
+  {
+    const t = boot({ [KEY]: JSON.stringify(base()) });
+    const before = t.seedRaw();
+    eq(t.win.changeState(() => { throw new Error('boom'); }), false,
+       '★ mutator 抛错时 changeState 返回 false');
+    eq(t.seedRaw(), before, '★ mutator 抛错不落盘');
+    t.close();
+  }
+
+  // ---- P2 CSV 部分结算折扣口径 ----
+  {
+    const s = base();
+    s.ledgers[0].games = [{ id: 'g', date: '2026-01-01', rake: 1000, entries: [
+      { playerId: 'p1', playerName: '老王', buys: [10000], balance: 12000 },
+      { playerId: 'p2', playerName: '小李', buys: [10000], balance: 0 },
+      { playerId: 'p1', playerName: '老王', buys: [10000] },
+    ]}];
+    // 未结算人员放在另一 id 上（同一 id 一场里只能出现一次）
+    s.ledgers[0].players.push({ id: 'p3', name: '小张' });
+    s.ledgers[0].games = [{ id: 'g1', date: '2026-01-01', rake: 1000, entries: [
+      { playerId: 'p1', playerName: '老王', buys: [10000], balance: 12000 },
+      { playerId: 'p2', playerName: '小李', buys: [10000], balance: 0 },
+      { playerId: 'p3', playerName: '小张', buys: [10000] },
+    ]}];
+    const t = boot({ [KEY]: JSON.stringify(s) });
+    const csv = t.captureBlob();
+    t.click(t.$('btnData')); t.click(t.$('btnExportCsv')); csv.restore();
+    ok(csv.get().text.includes('（已结算部分）'), '★ CSV 折扣与界面一样标注已结算部分');
+    t.close();
+  }
+}
+
 /* ===========================================================================
  * 汇总
  * ======================================================================== */

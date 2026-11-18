@@ -1078,12 +1078,14 @@
       <button class="btn btn-ghost btn-block" id="btnImport" style="margin-bottom:9px">从备份文件恢复</button>
       <input type="file" id="fileImport" accept=".json,application/json" style="display:none">
       <button class="btn btn-ghost btn-block" id="btnHealth" style="margin-bottom:9px">检查历史数据</button>
+      <button class="btn btn-ghost btn-block" id="btnAuditExport" style="margin-bottom:9px">导出金额操作记录</button>
       <div id="recoveryList" style="margin:14px 0;overflow-wrap:anywhere"></div>
       <div class="note">
         JSON 备份包含全部账本、人员与牌局记录，用于完整恢复。<br>
         Excel 明细是当前账本的逐局流水（人员 / 买入 / 总买入 / 结余 / 盈亏），
         <b>金额保留两位小数</b>，方便对账。<br>
-        恢复会<b>覆盖</b>当前设备上的全部数据，建议先导出一份当前数据再恢复。
+        恢复会<b>覆盖</b>当前设备上的全部数据，建议先导出一份当前数据再恢复。<br>
+        金额操作记录独立保存最近 200 条变更（含修改前后金额），不会被恢复覆盖，可单独导出。
       </div>
       <div class="danger-zone">
         <button class="btn btn-ghost btn-block" id="btnClearGames">清空当前账本的牌局记录</button>
@@ -1122,6 +1124,8 @@
    金额一律用「整数分」存储与运算，彻底规避浮点误差
    ============================================================ */
 const KEY = 'poker-ledger:v1';
+/** 单笔金额上限（整数分）：录入解析、落盘校验共用同一个口径，避免「能填不能存」 */
+const MONEY_CAP = 1000000000000;
 
 const uid = () =>
   (crypto.randomUUID ? crypto.randomUUID()
@@ -1139,7 +1143,9 @@ function parseCents(str) {
   const centsBig = BigInt(intPart || '0') * 100n
                  + BigInt((decPart + '00').slice(0, 2));
   const signed = neg ? -centsBig : centsBig;
-  return signed >= BigInt(Number.MIN_SAFE_INTEGER) && signed <= BigInt(Number.MAX_SAFE_INTEGER)
+  // ★ 与 validateState.money() 用同一个上限：否则金额「填得进去、界面算得通、
+  //   点保存才被拒」，且提示会误导成存储权限问题。
+  return signed >= -BigInt(MONEY_CAP) && signed <= BigInt(MONEY_CAP)
     ? Number(signed)
     : NaN;
 }
@@ -1176,7 +1182,11 @@ function fmtSigned(cents) {
 function fmtYuan(cents) {
   if (!Number.isFinite(cents)) return '?';
   const neg = cents < 0;
-  const v = Math.round(Math.abs(cents) / 100);
+  const abs = Math.abs(cents);
+  // ★ 不足 1 元时保留角分：Math.round 会把 -1 分显示成 "-0"，
+  //   真实亏损被读成打平；带角分的买入/结余也会让同行数字对不上。
+  if (abs > 0 && abs < 100) return fmtCents(cents);
+  const v = Math.round(abs / 100);
   return (neg ? '-' : '') + v;
 }
 
@@ -1188,6 +1198,7 @@ function fmtSignedYuan(cents) {
 
 /** 紧凑显示：省略无意义的小数零，用于统计卡 */
 function fmtCompact(cents) {
+  if (!Number.isFinite(cents)) return '?';
   const abs = Math.abs(cents);
   const sign = cents < 0 ? '-' : '';
   if (abs === 0) return '0';
@@ -1226,6 +1237,15 @@ let brokenArchived = false;
 let storageReadFailed = false;
 const IMPORT_PREFIX = KEY + ':before-import:';
 const MIGRATE_PREFIX = KEY + ':before-migrate:';
+const AUDIT_KEY = KEY + ':audit';
+const AUDIT_MAX = 200;
+
+// 多窗口并发保护：记住本窗口上次读到/写入的主存档原文。
+// 保存前若磁盘原文变了，说明别的窗口改过数据 —— 宁可拒绝保存，也不能整份覆盖。
+let lastSeenRaw = null;
+try { lastSeenRaw = localStorage.getItem(KEY); } catch (e) { /* load() 会置 storageReadFailed */ }
+let writeConflict = false;
+let importBaseRaw = null;   // 选中导入文件时见到的存档原文，用于识别读取期间的改动
 
 let db = load();
 let currentId = db.currentId;
@@ -1279,7 +1299,12 @@ function stashBroken(raw) {
 }
 
 // 加载、导入、提交共用验证。缺字段可迁移，存在但类型错误的字段拒绝。
-function validateState(input) {
+//
+// ★ allowLegacyNegative：只允许「读取已有存档」和「保存由旧档派生的数据」时
+//   容忍历史遗留的负数结余。录入端与导入一律严格拒绝 —— 否则旧档会在 load()
+//   阶段被判为损坏、直接换成空白账本，那比错账更糟。
+function validateState(input, opts = {}) {
+  const allowLegacyNegative = opts.allowLegacyNegative === true;
   const obj = v => v !== null && typeof v === 'object' && !Array.isArray(v);
   const need = (yes, msg) => { if (!yes) throw new Error(msg); };
   const id = v => typeof v === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(v);
@@ -1289,7 +1314,7 @@ function validateState(input) {
     return v.trim() || fallback;
   };
   const money = (v, positive = false) => {
-    need(typeof v === 'number' && Number.isSafeInteger(v) && Math.abs(v) <= 1000000000000
+    need(typeof v === 'number' && Number.isSafeInteger(v) && Math.abs(v) <= MONEY_CAP
       && (!positive || v > 0), '金额必须为范围内的整数分');
     return v;
   };
@@ -1324,7 +1349,11 @@ function validateState(input) {
       let insBuy = 0, insBalance = 0;
       if (g.insBuy !== undefined || g.insBalance !== undefined) {
         if (g.insBuy !== undefined) { money(g.insBuy); need(g.insBuy >= 0, '保险带入不能为负'); insBuy = g.insBuy; }
-        if (g.insBalance !== undefined) { money(g.insBalance); insBalance = g.insBalance; }
+        if (g.insBalance !== undefined) {
+          money(g.insBalance);
+          need(allowLegacyNegative || g.insBalance >= 0, '保险结余不能为负');
+          insBalance = g.insBalance;
+        }
       } else if (g.insurance !== undefined) {
         money(g.insurance);
         if (g.insurance >= 0) { insBuy = 0; insBalance = g.insurance; }
@@ -1344,8 +1373,9 @@ function validateState(input) {
           } else if (e.rebuy !== undefined) { money(e.rebuy); need(e.rebuy >= 0, '追加买入不能为负'); if (e.rebuy > 0) buys.push(e.rebuy); }
         }
         const total = buys.reduce((s, n) => s + n, 0);
-        need(Number.isSafeInteger(total) && total <= 1000000000000, '买入合计超出范围');
+        need(Number.isSafeInteger(total) && total <= MONEY_CAP, '买入合计超出范围');
         const balance = e.balance === undefined || e.balance === null || e.balance === '' ? null : money(e.balance);
+        need(allowLegacyNegative || balance === null || balance >= 0, '结余不能为负');
         aggregateBuy += total; aggregateBalance += Math.abs(balance || 0);
         need(Number.isSafeInteger(aggregateBuy) && Number.isSafeInteger(aggregateBalance)
           && aggregateBuy + aggregateBalance <= Number.MAX_SAFE_INTEGER, '存档合计超出安全范围');
@@ -1370,7 +1400,7 @@ function load() {
     try { raw = localStorage.getItem(KEY); }
     catch (e) { storageReadFailed = true; saveBroken = true; throw e; }
     if (!raw) throw new Error('empty');
-    return validateState(JSON.parse(raw));
+    return validateState(JSON.parse(raw), { allowLegacyNegative: true });
   } catch (e) {
     // ★ 关键：解析失败时把原始内容留一份副本，再开新账本。
     //   同时挂一个醒目的提示条 —— 用户必须知道「你的数据出问题了」，
@@ -1394,6 +1424,48 @@ function exportBroken() {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
   toast('损坏的原始存档已导出，可发给开发者尝试修复');
+}
+
+/* ---------- 金额变更审计（轻量，独立于主存档） ---------- */
+/** 只留对账真正需要的金额字段，避免把整份存档复制进日志 */
+function moneySnapshot(g) {
+  if (!g) return null;
+  return {
+    rake: g.rake || 0, insBuy: g.insBuy || 0, insBalance: g.insBalance || 0,
+    entries: (g.entries || []).map(e => ({
+      name: e.playerName,
+      buys: (e.buys || []).slice(),
+      balance: e.balance === undefined || e.balance === null ? null : e.balance,
+    })),
+  };
+}
+
+/** 记录一次金额变更。审计写失败绝不能影响主存档或用户操作。 */
+function recordAudit(action, detail) {
+  try {
+    let list = [];
+    try {
+      const p = JSON.parse(localStorage.getItem(AUDIT_KEY) || '[]');
+      if (Array.isArray(p)) list = p;
+    } catch (e) { /* 日志坏了就从头记 */ }
+    list.unshift(Object.assign({ at: new Date().toISOString(), action }, detail || {}));
+    localStorage.setItem(AUDIT_KEY, JSON.stringify(list.slice(0, AUDIT_MAX)));
+  } catch (e) { /* 配额不足等：静默跳过，不阻断业务 */ }
+}
+
+function exportAudit() {
+  let raw = '[]';
+  try { raw = localStorage.getItem(AUDIT_KEY) || '[]'; } catch (e) { /* 空日志 */ }
+  try {
+    const blob = new Blob([raw], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `扑克记分房-操作记录-${todayStr()}.json`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('金额操作记录已导出');
+  } catch (e) { toast('导出失败，请检查存储权限'); }
 }
 
 /** 恢复副本的类型标签：三种前缀共用同一套导出/列表逻辑 */
@@ -1450,10 +1522,23 @@ function serializable(state) {
 }
 
 function save(candidate = db, beforeImport = false) {
+  // ★ 多窗口乐观锁：磁盘原文与上次读到的不一致 = 别的窗口写过。
+  //   此时整份写回会抹掉对方的牌局，必须拒绝并让用户刷新，而不是"后写者赢"。
+  try {
+    const diskRaw = localStorage.getItem(KEY);
+    if (writeConflict || diskRaw !== lastSeenRaw) {
+      writeConflict = true;
+      renderAlertBar();
+      toast('数据已在其它窗口更新：为避免覆盖，已停止保存。请刷新页面后继续', 5000);
+      return false;
+    }
+  } catch (e) {
+    // 读取失败交给下面的 try 统一处理，不在这里误报冲突
+  }
   try {
     // 启动时无法读取不等于没有存档，禁止用临时空账本覆盖未知原件。
     if (storageReadFailed && !beforeImport) throw new Error('请恢复读取权限并刷新页面后重试');
-    const clean = validateState(candidate);
+    const clean = validateState(candidate, { allowLegacyNegative: true });
     const payload = JSON.stringify(serializable(clean));
     // 没有经读回确认的副本时绝不覆盖唯一损坏原件；恢复写权限后可重试。
     if (brokenRaw && !brokenArchived) {
@@ -1465,6 +1550,8 @@ function save(candidate = db, beforeImport = false) {
       if (old !== null) archiveRaw(IMPORT_PREFIX, old);
     }
     localStorage.setItem(KEY, payload);
+    lastSeenRaw = payload;
+    writeConflict = false;
     db = clean;
     currentId = clean.currentId;
     brokenRaw = null;
@@ -1484,7 +1571,14 @@ function save(candidate = db, beforeImport = false) {
 function changeState(mutator, touch = true) {
   const candidate = JSON.parse(JSON.stringify(db));
   const l = candidate.ledgers.find(l => l.id === candidate.currentId);
-  mutator(candidate, l);
+  try {
+    mutator(candidate, l);
+  } catch (e) {
+    // 副本还没落盘，db 一定没变；给调用方明确的失败返回，避免"点了没反应"
+    console.warn('状态变更未完成', e);
+    toast('操作未完成，数据未改动');
+    return false;
+  }
   if (touch && l) l.updatedAt = new Date().toISOString();
   return save(candidate);
 }
@@ -1596,7 +1690,9 @@ function gameStats(g) {
   const loss = pLoss + (insurance < 0 ? -insurance : 0);
   const balanced = pending === 0 && win + rake === loss;
   // 折扣 = 1 − 抽水 ÷ 输的流水，即赢家实得比例（抽水 20% → 折扣 80%）
-  const discount = loss > 0 ? (1 - rake / loss) * 100 : null;
+  // 抽水超过输的流水时 1 − rake/loss 会变成负数（如 -150%），
+  // 「赢家实得比例」没有负值含义，这种情况账也没平，按无法计算处理。
+  const discount = loss > 0 && loss >= rake ? (1 - rake / loss) * 100 : null;
   return { win, loss, pWin, pLoss, rake, insBuy, insBalance, insurance, discount, pending, flow: loss, diff: win + rake - loss, balanced };
 }
 
@@ -1660,7 +1756,10 @@ function inspectHistory(l = ledger()) {
       row.ids.add(e.playerId);
       row.entries += 1;
       // 未结算（结余为空）不能当 0 搬走；抽水净额为负也不合法，两者都留给人工判断
-      if (e.netProfit === null || (kind === 'rake' && e.netProfit < 0)) { row.blocked += 1; continue; }
+      if (e.netProfit === null || (kind === 'rake' && e.netProfit < 0)
+          || (kind === 'insurance' && e.balance !== null && e.balance < 0)) {
+        row.blocked += 1; continue;
+      }
       row.ok += 1;
       row.net += e.netProfit;
     }
@@ -1704,7 +1803,8 @@ function applyHistoryMigration(keys) {
           const hit = grp.ids.has(e.playerId) || normName(e.playerName) === grp.norm;
           if (!hit) { keep.push(e); continue; }
           const ne = normalizeEntry(e);
-          if (ne.netProfit === null || (grp.kind === 'rake' && ne.netProfit < 0)) {
+          if (ne.netProfit === null || (grp.kind === 'rake' && ne.netProfit < 0)
+              || (grp.kind === 'insurance' && ne.balance !== null && ne.balance < 0)) {
             keep.push(e); skipped += 1; continue;
           }
           if (grp.kind === 'rake') {
@@ -1722,6 +1822,7 @@ function applyHistoryMigration(keys) {
         !grp.ids.has(p.id) || target.games.some(g => (g.entries || []).some(e => e.playerId === p.id)));
     }
   });
+  if (saved) recordAudit('历史数据迁移', { moved, skipped, groups: picked.map(x => x.label) });
   return saved ? { moved, skipped } : null;
 }
 
@@ -1747,7 +1848,11 @@ function leaderboard() {
   for (const g of l.games) {
     for (const e of entriesOf(g)) {
       if (!map.has(e.playerId)) {
-        map.set(e.playerId, { id: e.playerId, name: nameOf(e), ...empty() });
+        // 删掉旧人员再建同名新人时，历史明细仍挂旧 id。若按 id 各建一行，
+        // 排行榜会出现两行「老王」，一个人的账被拆成两半。按归一化姓名归并。
+        const snapshot = nameOf(e);
+        const same = [...map.values()].find(r => normName(r.name) === normName(snapshot));
+        map.set(e.playerId, same || { id: e.playerId, name: snapshot, ...empty() });
       }
       const row = map.get(e.playerId);
       if (e.netProfit === null) {
@@ -1761,7 +1866,8 @@ function leaderboard() {
       row.count += 1;
     }
   }
-  return [...map.values()]
+  // 同一个统计行可能被多个历史 id 指向（同名归并），Set 去重避免渲染出重复行
+  return [...new Set(map.values())]
     .filter(r => r.count > 0 || l.players.some(p => p.id === r.id))
     .sort((a, b) => b.net - a.net || a.name.localeCompare(b.name, 'zh-CN'));
 }
@@ -1810,7 +1916,11 @@ function renderAlertBar() {
 
   let archives = [];
   try { archives = archiveKeys(BROKEN_PREFIX); } catch (e) { /* 存储不可读 */ }
-  if (saveBroken) {
+  if (writeConflict) {
+    bar.hidden = false;
+    title.textContent = '数据已在其它窗口更新';
+    desc.textContent = '为避免覆盖另一窗口的牌局，本窗口已暂停保存。请刷新页面载入最新数据后继续。';
+  } else if (saveBroken) {
     bar.hidden = false;
     title.textContent = '数据未保存';
     desc.textContent = storageReadFailed
@@ -1829,7 +1939,7 @@ function renderAlertBar() {
   } else {
     bar.hidden = true;
   }
-  btnExport.hidden = !brokenRaw && !archives.length;
+  btnExport.hidden = writeConflict || (!brokenRaw && !archives.length);
   if (!brokenRaw && archives.length) {
     btnExport.onclick = () => downloadArchive(archives[0]);
   } else { btnExport.onclick = exportBroken; }
@@ -1920,7 +2030,9 @@ function renderRank() {
       : `${r.count} 场 · 投入 ¥${fmtCompact(r.totalBuy)}`
         + ` · 赢 ¥${fmtCompact(r.win)} / 输 ¥${fmtCompact(r.loss)}`
         + (r.pending ? ` · ${r.pending} 场未结算` : '');
-    const netText = r.pending && r.net === 0 ? '未结算' : fmtSigned(r.net);
+    // 只有「一场都没结算」才把净额写成未知；有已结算场次且恰好打平时，
+    // 0.00 是真实结果，不能被未结算标记吞掉。
+    const netText = r.count === r.pending ? '未结算' : fmtSigned(r.net);
     return `<div class="rank-row">
       <div class="rank-no${i === 0 ? ' top' : ''}">${i + 1}</div>
       <div style="min-width:0">
@@ -2054,7 +2166,7 @@ function renderGames() {
                 <td>${esc(e.playerName)}</td>
                 <td class="r num" style="font-weight:600"><span class="tb-wrap">${fmtCompact(e.totalBuy)}${e.buys.length > 1 ? `<span class="buy-badge">${e.buys.length}笔</span>` : ''}</span></td>
                 <td class="r num">${e.balance === null ? '未结算' : fmtCompact(e.balance)}</td>
-                <td class="r num cell-net" style="color:${c}">${e.netProfit === null ? '未结算' : fmtSignedYuan(e.netProfit)}</td>
+                <td class="r num cell-net" style="color:${c}">${e.netProfit === null ? '未结算' : fmtSigned(e.netProfit)}</td>
               </tr>`;
             }).join('')}
             ${st.rake > 0 ? `<tr class="system-row">
@@ -2292,9 +2404,15 @@ function doBuy(i, opts = {}) {
   if (!input) return;
   const jump = !!opts.jump;
 
-  const amt = parseCents(input.value);
+  // ★ 只读 r._buyText 这个唯一事实源：DOM 由它渲染、计算与保存也只读它。
+  //   以前这里读 input.value，而 saveGame 读 _buyText，自动填充等场景会分叉。
+  const amt = parseCents(r._buyText === undefined ? '' : r._buyText);
   if (Number.isNaN(amt)) { toast('买入金额格式有误，最多两位小数'); input.focus(); return; }
-  if (amt <= 0) {
+  if (amt < 0) {
+    // 负数是填错，不是「空格子」：必须拦住、聚焦原框，不能悄悄跳走
+    toast('买入金额不能为负数'); input.focus(); return;
+  }
+  if (amt === 0) {
     // 回车 + 空格子 = 这一行不用补买入，安静地跳去填结余（不弹提示打扰节奏）
     if (jump) {
       const v = document.querySelector(`[data-i="${i}"][data-f="value"]`);
@@ -2436,6 +2554,12 @@ function computeEntries() {
     // ★ 结余格是不是真的填过？
     //   买入已记、结余仍为空时，结果未知，不把本金误算成亏损。
     const settled = String(r.value === undefined || r.value === null ? '' : r.value).trim() !== '';
+    // ★ 结余 = 离桌时手里的筹码，不可能是负数。负号通常是误触或把「亏了多少」
+    //   填到了这里；放行会让净盈亏凭空少一大截，必须当场拦住。
+    if (settled && val < 0) {
+      return { error: '结余不能为负数',
+        inputSelector: `[data-i="${out.length}"][data-f="value"]` };
+    }
     const netProfit = settled ? val - totalBuy : null;
     if (settled && !Number.isSafeInteger(netProfit)) {
       return { error: '净盈亏超出安全范围' };
@@ -2475,9 +2599,9 @@ function updateCalc() {
   }
   const insBalanceText = document.getElementById('inInsBalance').value;
   const insBalance = parseCents(insBalanceText);
-  if (Number.isNaN(insBalance)) {
+  if (Number.isNaN(insBalance) || insBalance < 0) {
     box.className = 'calc-hint bad';
-    box.innerHTML = '<span>保险结余格式有误（最多两位小数）</span>';
+    box.innerHTML = `<span>${Number.isNaN(insBalance) ? '保险结余格式有误（最多两位小数）' : '保险结余不能为负'}</span>`;
     return false;
   }
   const insurance = insBalance - insBuy;
@@ -2509,7 +2633,7 @@ function updateCalc() {
   const loss = pLoss + (insurance < 0 ? -insurance : 0);
   const lossFlow = loss;
   // 与 gameStats 同口径：折扣 = 1 − 抽水 ÷ 输的流水（赢家实得比例）
-  const discount = lossFlow > 0 ? (1 - rake / lossFlow) * 100 : null;
+  const discount = lossFlow > 0 && lossFlow >= rake ? (1 - rake / lossFlow) * 100 : null;
   const balanced = pending === 0 && win + rake === loss;
 
   // 区分两种情况：
@@ -2560,9 +2684,11 @@ function updateCalc() {
   // 比只显示「差 ¥100 未平」更接近真正要做的动作。
   const rakeTip = rake > 0 && lossFlow === 0
     ? '<span class="pending-tip">抽水大于 0，但输的流水为 0，折扣无法计算</span>'
-    : (rake === 0 && insurance === 0 && pending === 0 && balanceDiff < 0
-      ? '<span class="pending-tip">差额可能来自抽水或保险，若本局有请填写</span>'
-      : '');
+    : (rake > lossFlow && lossFlow > 0
+      ? '<span class="pending-tip">抽水超过输的流水，折扣无法计算</span>'
+      : (rake === 0 && insurance === 0 && pending === 0 && balanceDiff < 0
+        ? '<span class="pending-tip">差额可能来自抽水或保险，若本局有请填写</span>'
+        : ''));
 
   const insTip = insBuy > 0 && String(insBalanceText).trim() === ''
     ? '<span class="pending-tip">保险结余未填，已按 0 计（等于全部赔付）</span>'
@@ -2624,8 +2750,8 @@ function saveGame() {
     return;
   }
   const rawInsBalance = parseCents(document.getElementById('inInsBalance').value);
-  if (!Number.isSafeInteger(rawInsBalance)) {
-    toast('保险结余格式有误（最多两位小数）');
+  if (!Number.isSafeInteger(rawInsBalance) || rawInsBalance < 0) {
+    toast(Number.isNaN(rawInsBalance) ? '保险结余格式有误（最多两位小数）' : '保险结余不能为负');
     document.getElementById('inInsBalance').focus();
     return;
   }
@@ -2636,15 +2762,21 @@ function saveGame() {
   const insurance = insBalance - insBuy;
   const editing = editGameId;
   if (editing && !l.games.some(g => g.id === editing)) { toast('这场牌局已不存在'); return; }
+  const beforeSnap = editing ? moneySnapshot(l.games.find(g => g.id === editing)) : null;
+  const gameId = editing || uid();
   if (!changeState((state, target) => {
     if (editing) {
       const g = target.games.find(g => g.id === editing);
       Object.assign(g, { date, buyDefault, rake, insBuy, insBalance, insurance, entries: stored, updatedAt: new Date().toISOString() });
     } else {
-      target.games.push({ id: uid(), date, buyDefault, rake, insBuy, insBalance, insurance, entries: stored,
+      target.games.push({ id: gameId, date, buyDefault, rake, insBuy, insBalance, insurance, entries: stored,
         createdAt: new Date().toISOString(), _open: true });
     }
   })) return;
+  recordAudit(editing ? '更新牌局' : '新建牌局', {
+    gameId, date, before: beforeSnap,
+    after: moneySnapshot({ rake, insBuy, insBalance, entries: stored }),
+  });
 
   editGameId = null;
   rows = [];
@@ -2805,6 +2937,10 @@ function exportData() {
 function importData(file) {
   const reader = new FileReader();
   reader.onload = () => {
+    // 读取是异步的：选完文件到确认之间用户可能又记了一笔。
+    // 用选文件那一刻的存档原文做基准，变化时明确二次确认。
+    const baseRaw = importBaseRaw;
+    importBaseRaw = null;
     let parsed;
     try {
       parsed = validateState(JSON.parse(String(reader.result)));
@@ -2815,7 +2951,14 @@ function importData(file) {
     const games = parsed.ledgers.reduce((s, l) => s + l.games.length, 0);
     if (!confirm(`即将恢复 ${parsed.ledgers.length} 个账本、${games} 场牌局。\n\n当前设备上的全部数据会被覆盖，确定继续？`)) return;
 
+    if (baseRaw !== null) {
+      let nowRaw = null;
+      try { nowRaw = localStorage.getItem(KEY); } catch (e) { /* 下面 save 会统一报错 */ }
+      if (nowRaw !== baseRaw && !confirm('选择备份文件后又修改了数据。继续恢复会覆盖这些新改动，确定继续吗？')) return;
+    }
+
     if (!save(parsed, true)) return;
+    recordAudit('恢复备份', { ledgers: parsed.ledgers.length, games, source: 'file' });
     closeSheet('ovData');
     render();
     toast('恢复完成');
@@ -2828,7 +2971,9 @@ function clearGames() {
   const l = ledger();
   if (!l || !l.games.length) { toast('当前账本没有牌局记录'); return; }
   if (!confirm(`清空「${l.name}」下的全部 ${l.games.length} 场牌局记录？\n\n人员会保留，此操作无法撤销。`)) return;
+  const gameIds = l.games.map(g => g.id);
   if (!changeState((state, target) => { target.games = []; })) return;
+  recordAudit('清空牌局', { count: gameIds.length, gameIds });
   closeSheet('ovData');
   render();
   toast('已清空');
@@ -2939,6 +3084,14 @@ document.getElementById('btnNewLedger').onclick = newLedger;
 
 document.getElementById('btnData').onclick = () => openSheet('ovData');
 
+// 另一个窗口改了主存档：本窗口立刻停止写入，避免后续保存整份覆盖对方
+window.addEventListener('storage', e => {
+  if (e.key !== KEY || e.newValue === e.oldValue) return;
+  writeConflict = true;
+  renderAlertBar();
+  toast('另一个窗口更新了数据，请刷新页面后继续', 5000);
+});
+
 // 历史数据体检：检测 → 勾选 → 迁移（迁移前自动备份）
 document.getElementById('btnHealth').onclick = openHealth;
 document.getElementById('healthList').addEventListener('click', e => {
@@ -2969,6 +3122,9 @@ document.getElementById('btnHealthApply').onclick = () => {
 // 存储告警条的两个按钮
 document.getElementById('btnAlertExport').onclick = exportBroken;
 document.getElementById('btnAlertDismiss').onclick = () => {
+  // 损坏原件只在内存里时，关掉提示再刷新就再也导不出来了 —— 必须二次确认
+  if (brokenRaw && !brokenArchived
+      && !confirm('原始存档还没能另存为副本。现在关闭提示，刷新后可能无法恢复。\n\n确定关闭吗？')) return;
   document.getElementById('alertBar').hidden = true;
 };
 
@@ -3032,8 +3188,14 @@ function exportCsv() {
   for (const g of l.games) {
     const entries = entriesOf(g);
     const st = gameStats(g);
-    const discount = st.rake === 0 || st.discount === null || st.pending ? '' : st.discount.toFixed(2) + '%';
-    for (const e of entries) {
+    // 与明细显示同口径：部分结算时也要标出折扣是「已结算部分」，不能一边有一边无
+    const discount = st.rake === 0 || st.discount === null
+      ? '' : st.discount.toFixed(2) + '%' + (st.pending ? '（已结算部分）' : '');
+    // ★ 牌局级字段只在每组首行写一次。逐行重复虽然看着齐全，
+    //   但在 Excel 里对「本局抽水 / 输的流水」求和会按人数翻倍 ——
+    //   这是拿去做对账的文件，绝不能自相矛盾。
+    entries.forEach((e, idx) => {
+      const first = idx === 0;
       lines.push([
         q(g.date),
         q(e.playerName),
@@ -3041,14 +3203,14 @@ function exportCsv() {
         fmtCents(e.totalBuy),
         e.balance === null ? '' : fmtCents(e.balance),
         e.netProfit === null ? '' : fmtCents(e.netProfit),
-        fmtCents(st.rake),
-        fmtCents(st.insBuy),
-        fmtCents(st.insBalance),
-        fmtCents(st.insurance),
-        fmtCents(st.loss),
-        discount,
+        first ? fmtCents(st.rake) : '',
+        first ? fmtCents(st.insBuy) : '',
+        first ? fmtCents(st.insBalance) : '',
+        first ? fmtCents(st.insurance) : '',
+        first ? fmtCents(st.loss) : '',
+        first ? discount : '',
       ].join(','));
-    }
+    });
   }
   if (l.games.length === 0) {
     toast('当前账本还没有牌局记录');
@@ -3071,10 +3233,14 @@ function exportCsv() {
 
 document.getElementById('btnExport').onclick = exportData;
 document.getElementById('btnExportCsv').onclick = exportCsv;
+document.getElementById('btnAuditExport').onclick = exportAudit;
 document.getElementById('btnImport').onclick = () => document.getElementById('fileImport').click();
 document.getElementById('fileImport').onchange = e => {
   const f = e.target.files && e.target.files[0];
-  if (f) importData(f);
+  if (f) {
+    try { importBaseRaw = localStorage.getItem(KEY); } catch (err) { importBaseRaw = null; }
+    importData(f);
+  }
   e.target.value = '';
 };
 document.getElementById('btnClearGames').onclick = clearGames;
@@ -3152,7 +3318,9 @@ document.getElementById('gameList').addEventListener('click', e => {
       const detail = `${g.date} 这场，共 ${entriesOf(g).length} 人`
         + (st.pending ? `，${st.pending} 人未结算` : `，流水 ¥${fmtCents(st.flow)}`);
       if (!confirm(`删除牌局\n\n${detail}\n\n删除后无法撤销，确定继续吗？`)) return;
+      const deletedSnap = moneySnapshot(g);
       if (!changeState((state, target) => { target.games = target.games.filter(x => x.id !== del.dataset.del); })) return;
+      recordAudit('删除牌局', { gameId: g.id, date: g.date, before: deletedSnap });
       render();
       toast('已删除');
     }
@@ -3217,11 +3385,24 @@ document.getElementById('rowZone').addEventListener('keydown', e => {
 
 document.getElementById('rowZone').addEventListener('change', e => {
   const i = e.target.dataset.i;
-  if (i === undefined || e.target.dataset.f !== 'player') return;
+  if (i === undefined) return;
   const idx = +i;
-  rows[idx].playerId = e.target.value;
-  const opt = e.target.selectedOptions[0];
-  if (opt) rows[idx].playerName = opt.textContent;
+  const f = e.target.dataset.f;
+  if (f === 'player') {
+    // 改派人员：这一行已录的买入/结余整体跟着换人，姓名快照同步更新
+    rows[idx].playerId = e.target.value;
+    const opt = e.target.selectedOptions[0];
+    if (opt) rows[idx].playerName = opt.textContent;
+    return;
+  }
+  if (NUMERIC_FIELDS.includes(f)) {
+    // 自动填充 / 浏览器恢复表单可能只触发 change，不触发 input。
+    // 在这里回读一次，保证 DOM 与状态不漂移（正常逐字输入时是幂等的）。
+    if (f === 'buy') rows[idx]._buyText = e.target.value;
+    else rows[idx].value = e.target.value;
+    paintProfits();
+    updateCalc();
+  }
 });
 
 document.getElementById('rowZone').addEventListener('click', e => {
