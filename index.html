@@ -937,7 +937,7 @@
         <input class="input num" type="text" id="inRake" inputmode="decimal"
                placeholder="如 10，留空按 0 计"
                onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">
-        <div class="field-hint">本局水钱，留空按 0 计。折扣 = 抽水 ÷ 输的流水。</div>
+        <div class="field-hint">本局水钱，留空按 0 计。折扣 = 1 − 抽水 ÷ 输的流水。</div>
       </div>
 
       <!-- ★ 保险：all-in 时领先方买保险，被反超由保险方赔付。
@@ -964,7 +964,8 @@
       <div class="calc-hint" id="calcHint"></div>
 
       <div class="note">
-        <b>抽水</b> = 本局固定系统角色收取的水钱；配平按「赢方合计 + 抽水 = 输方合计」。<br>
+        <b>抽水</b> = 本局固定系统角色收取的水钱；配平按「赢方合计 + 抽水 = 输方合计」，
+        折扣 = <b>1 − 抽水 ÷ 输的流水</b>（赢家实得比例，如抽水 20% → 折扣 80%）。<br>
         <b>保险</b> = all-in 时领先方买保险、被反超由保险方赔付；这里只记本局净额（正=保险收，负=保险赔），计入流水。<br>
         <b>买入</b> = 往牌桌上放的本金（上桌带的钱、中途再加的筹码，都是买入，性质完全一样）。
         每次填新金额后按 <b>回车</b> 或点 <b>+</b>，就记一笔进明细 —— <b>结余不受影响</b>，
@@ -1529,7 +1530,8 @@ function gameStats(g) {
   const win = pWin + (insurance > 0 ? insurance : 0);
   const loss = pLoss + (insurance < 0 ? -insurance : 0);
   const balanced = pending === 0 && win + rake === loss;
-  const discount = loss > 0 ? rake / loss * 100 : null;
+  // 折扣 = 1 − 抽水 ÷ 输的流水，即赢家实得比例（抽水 20% → 折扣 80%）
+  const discount = loss > 0 ? (1 - rake / loss) * 100 : null;
   return { win, loss, pWin, pLoss, rake, insurance, discount, pending, flow: loss, diff: win + rake - loss, balanced };
 }
 
@@ -2244,7 +2246,8 @@ function updateCalc() {
   const win = pWin + (insurance > 0 ? insurance : 0);
   const loss = pLoss + (insurance < 0 ? -insurance : 0);
   const lossFlow = loss;
-  const discount = lossFlow > 0 ? rake / lossFlow * 100 : null;
+  // 与 gameStats 同口径：折扣 = 1 − 抽水 ÷ 输的流水（赢家实得比例）
+  const discount = lossFlow > 0 ? (1 - rake / lossFlow) * 100 : null;
   const balanced = pending === 0 && win + rake === loss;
 
   // 区分两种情况：

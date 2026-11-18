@@ -399,7 +399,7 @@ section('B. 金额精确性与零和核算（纯函数）');
   ], rake: 1000 };
   const balancedRakeStats = gameStats(balancedRake);
   eq([balancedRakeStats.win + balancedRakeStats.rake, balancedRakeStats.loss, balancedRakeStats.discount, balancedRakeStats.balanced].join(','),
-     '21000,21000,4.761904761904762,true', '★ 配平条件为赢方合计 + 抽水 = 输方合计，折扣按输的流水计算');
+     '21000,21000,95.23809523809523,true', '★ 配平条件为赢方合计 + 抽水 = 输方合计，折扣 = 1 − 抽水/输的流水');
   eq([gameStats({ entries: [], rake: 0 }).rake, gameStats({ entries: [] }).rake].join(','), '0,0',
      '★ 旧牌局缺少 rake 按 0 兼容，且不猜历史抽水');
 }
@@ -1546,14 +1546,14 @@ section('V. 本局抽水：系统角色 / 折扣 / 配平 / 兼容');
 
   t.set(t.$('inRake'), '50');
   ok(t.$('calcHint').textContent.includes('已平衡'), '★ 赢 100 + 抽水 50 = 输 150 → 已平衡');
-  ok(t.$('calcHint').textContent.includes('33.33%'), '★ 折扣 = 抽水 ÷ 输的流水 = 50/150 = 33.33%');
+  ok(t.$('calcHint').textContent.includes('66.67%'), '★ 折扣 = 1 − 抽水 ÷ 输的流水 = 1 − 50/150 = 66.67%');
 
   t.click(t.$('btnSaveGame'));
   const g = t.raw().ledgers[0].games[0];
   eq(g.rake, 5000, '★ 抽水以整数分落盘（¥50 → 5000）');
   ok(t.$('gameList').textContent.includes('2人'), '★ 抽水不计入真实玩家人数');
   ok(t.$('gameList').textContent.includes('抽水（系统）'), '★ 明细里抽水单独成系统行');
-  ok(t.$('gameList').textContent.includes('折扣 33.33%'), '★ 明细底部显示抽水折扣');
+  ok(t.$('gameList').textContent.includes('折扣 66.67%'), '★ 明细底部显示抽水折扣（赢家实得比例）');
   ok(!t.$('rankList').textContent.includes('抽水'), '★ 排行榜不出现抽水角色');
   eq(t.qa('.rank-row').length, 2, '★ 排行榜仍只有 2 位真实玩家');
   eq([t.qa('.rank-row')[0].textContent.includes('老王'), t.qa('.rank-row')[0].textContent.includes('+100')].join(','),
@@ -1589,7 +1589,7 @@ section('V. 本局抽水：系统角色 / 折扣 / 配平 / 兼容');
   const lines = csv.get().text.replace(/^﻿/, '').split('\r\n');
   eq(lines[0].split(',').slice(6).join(','), '本局抽水,本局保险,输的流水,折扣', '★ CSV 增加抽水/保险/输的流水/折扣列');
   const wang = lines.find(r => r.split(',')[0] === g.date && r.split(',')[1] === '老王');
-  eq(wang.split(',').slice(6).join(','), '50.00,0.00,150.00,33.33%',
+  eq(wang.split(',').slice(6).join(','), '50.00,0.00,150.00,66.67%',
      '★ CSV 每行重复整局抽水、保险、输的流水与折扣，金额保留两位小数');
   t.close();
 }
@@ -1650,14 +1650,14 @@ section('W. 保险：正负净额 / 计入流水 / 配平 / 兼容');
   t.set(t.$('inInsurance'), '-100');
   ok(t.$('calcHint').textContent.includes('已平衡'), '★ 保险赔 100 计入输方后配平');
   ok(t.$('calcHint').textContent.includes('含保险'), '★ 提示里标明输的流水含保险');
-  ok(t.$('calcHint').textContent.includes('20.00%'), '★ 折扣分母按含保险的输的流水 250 计算（50/250）');
+  ok(t.$('calcHint').textContent.includes('80.00%'), '★ 折扣按含保险的输的流水算：1 − 50/250 = 80.00%');
 
   t.click(t.$('btnSaveGame'));
   const g = t.raw().ledgers[0].games[0];
   eq([g.rake, g.insurance].join(','), '5000,-10000', '★ 抽水与有符号保险分别以整数分落盘');
   const text = t.$('gameList').textContent;
   ok(text.includes('保险（系统）'), '★ 明细里保险单独成系统行');
-  ok(text.includes('折扣 20.00%'), '★ 明细折扣同步为 20%');
+  ok(text.includes('折扣 80.00%'), '★ 明细折扣同步为 80%');
   eq(t.qa('.rank-row').length, 2, '★ 保险不进排行榜人数');
   ok(t.qa('.rank-row')[0].textContent.includes('+200'), '★ 保险不摊薄玩家个人盈亏');
 
@@ -1694,7 +1694,7 @@ section('W. 保险：正负净额 / 计入流水 / 配平 / 兼容');
   csv.restore();
   const wangLine = csv.get().text.replace(/^﻿/, '').split('\r\n')
     .find(r => r.split(',')[1] === '老王');
-  eq(wangLine.split(',').slice(6).join(','), '50.00,-100.00,250.00,20.00%',
+  eq(wangLine.split(',').slice(6).join(','), '50.00,-100.00,250.00,80.00%',
      '★ CSV 每行带抽水、保险、输的流水与折扣');
   t.close();
 }
